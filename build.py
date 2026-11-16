@@ -567,6 +567,32 @@ LOGO = ('<svg class="logo" viewBox="0 0 32 32" width="28" height="28" aria-hidde
 ARROW = ('<svg class="icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
          '<path d="M5 11 11 5M6 5h5v5" fill="none" stroke="currentColor" stroke-width="1.6" '
          'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+ICON_PATHS = {
+    "search": "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-4-4",
+    "file": "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h4",
+    "shield": "M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6zM9 12l2 2 4-4",
+    "people": "M16 20v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M9.5 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M21 20v-1"
+              "a4 4 0 0 0-3-3.9M15.5 4.1a3.5 3.5 0 0 1 0 6.8",
+    "check": "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8 12.5l2.7 2.7L16 9.8",
+    "flask": "M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3M7.5 15h9",
+    "upload": "M12 16V4M7 9l5-5 5 5M5 20h14",
+    "code": "M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 4l-3 16",
+}
+
+
+def icon(name):
+    """A decorative 20px line icon (aria-hidden) from ICON_PATHS."""
+    return ('<svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">'
+            f'<path d="{ICON_PATHS[name]}" fill="none" stroke="currentColor" stroke-width="1.7" '
+            'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+
+def dot(color):
+    """A status color dot for the catalog's status control; '' for no color."""
+    ok = color in ("neutral", "blue", "green", "amber", "red")
+    return f'<span class="seg-dot d-{color}" aria-hidden="true"></span>' if ok else ""
+
+
 PAGE_CSS = ("pages-home-catalog.css", "pages-kext-docs.css")  # phase-specific sheets, loaded after style.css
 
 
@@ -674,21 +700,49 @@ class Site:
         self.write(rel, doc)
 
     # -- shared pieces
-    def card(self, k, base):
+    def hw_ids(self, k):
+        """A project's PCI and USB ids, in order, without duplicates."""
+        ids = []
+        for h in items(k.get("hardware")):
+            h = obj(h)
+            for x in items(h.get("pci_ids")) + items(h.get("usb_ids")):
+                t = text(x)
+                if t and t not in ids:
+                    ids.append(t)
+        return ids
+
+    def totals(self):
+        """Numbers for the home page: projects, test reports, community-verified, hardware ids."""
+        ids, reports, verified = set(), 0, 0
+        for k in self.kexts:
+            ids.update(i.lower() for i in self.hw_ids(k))
+            st = obj(k.get("status"))
+            rt = st.get("reports_total")
+            ok = isinstance(rt, int) and not isinstance(rt, bool) and rt >= 0
+            reports += rt if ok else len(items(k.get("reports")))
+            verified += text(st.get("status")) == "community-verified"
+        return {"projects": len(self.kexts), "reports": reports, "verified": verified, "hw": len(ids)}
+
+    def card(self, k, base, hw_max=4):
+        """A project card: name, summary, hardware ids, meta, and a compact status ladder."""
         kid = text(k.get("id"))
         st = obj(k.get("status"))
         mac = obj(k.get("macos"))
         cats = "".join(category_chip(c) for c in items(k.get("categories")))
         rng = (f'<span class="meta-item">macOS {esc(text(mac.get("min")))} to {esc(text(mac.get("max")))}</span>'
                if mac else "")
-        lic = f'<span class="meta-item mono">{esc(text(k.get("license")))}</span>' if k.get("license") else ""
         rel = chip(text(st.get("release")), "ver", "Newest release") if st.get("release") else ""
-        return (f'<li data-id="{esc(kid)}"><article class="card card-link">'
+        ids = self.hw_ids(k)
+        hw = "".join(chip(i, "hw") for i in ids[:hw_max])
+        if len(ids) > hw_max:
+            hw += chip(f"+{len(ids) - hw_max} more", title="All hardware IDs are on the project page")
+        hw_html = f'<p class="chips kcard-hw"><span class="sr-only">Hardware IDs: </span>{hw}</p>' if hw else ""
+        return (f'<li data-id="{esc(kid)}"><article class="card card-link kcard">'
                 f'<div class="card-head">{monogram(k)}<div class="card-title">'
-                f'<h3><a href="{base}kext/{esc(kid)}/">{esc(text(k.get("name")) or kid)}</a></h3>'
-                f'{status_badge(text(st.get("status")))}</div></div>'
-                f'<p class="card-summary">{esc(text(k.get("summary")))}</p>'
-                f'<div class="card-meta">{cats}{rng}{lic}{rel}</div></article></li>')
+                f'<h3><a href="{base}kext/{esc(kid)}/">{esc(text(k.get("name")) or kid)}</a></h3></div></div>'
+                f'<p class="card-summary">{esc(text(k.get("summary")))}</p>{hw_html}'
+                f'<div class="card-meta">{cats}{rng}{rel}</div>'
+                f'<div class="kcard-status">{status_ladder(k, compact=True)}</div></article></li>')
 
     def latest_date(self, k):
         dates = [text(obj(r).get("date")) for r in items(k.get("releases"))]
@@ -697,39 +751,81 @@ class Site:
     # -- pages
     def home(self):
         base = "./"
+        t = self.totals()
+        n = t["projects"]
         recent = sorted(self.kexts, key=self.latest_date, reverse=True)[:6]
+        examples = []
+        for k in recent:
+            for i in self.hw_ids(k)[:2]:
+                if i not in examples and len(examples) < 3:
+                    examples.append(i)
+        tries = "".join(f'<a class="hw-try" href="catalog/?q={esc(q(i))}">{chip(i, "hw")}</a>' for i in examples)
+        try_html = f'<p class="hero-try"><span>Try</span>{tries}</p>' if tries else ""
+        tiles = stat_tiles([
+            stat_tile("Projects", n, "open source"),
+            stat_tile("Test reports", t["reports"], "works, partial or broken"),
+            stat_tile("Community-verified", t["verified"], f"{COMMUNITY_MIN} outside testers each"),
+            stat_tile("Hardware IDs", t["hw"], "PCI and USB"),
+        ])
         if recent:
-            cards = f'<ul class="cards">{"".join(self.card(k, base) for k in recent)}</ul>'
+            cards = f'<ul class="cards">{"".join(self.card(k, base, hw_max=3) for k in recent)}</ul>'
         else:
-            cards = '<p class="empty">No projects yet. <a href="docs/submit/">Submit the first one.</a></p>'
-        n = len(self.kexts)
+            cards = empty_state("No projects yet", "The catalog is waiting for its first entry.",
+                                button("Submit a project", "docs/submit/"))
+        steps = [
+            ("file", "Submit", "The maintainer adds one <code>kext.toml</code> file by pull request: source, "
+                               "license and releases."),
+            ("shield", "Rules check", "A bot checks the license, the public source and the SHA-256 of every "
+                                      "release. If they pass, it merges."),
+            ("people", "Test reports", "People who run the driver add a short report: works, partial or broken, "
+                                       "with their macOS build and hardware."),
+            ("check", "Status", f"{COMMUNITY_MIN} working reports from people who don't maintain it make it "
+                                "community-verified. Nobody sets a status by hand."),
+        ]
+        ladder = (f'<p class="pipe-badges">{badge("Submitted", "neutral")}{badge("Author-tested", "blue")}'
+                  f'{badge("Community-verified", "green")}</p>')
+        pipe = "".join(
+            f'<li class="pipe-step"><span class="pipe-node">{icon(ic)}</span><p class="pipe-k">Step {i}</p>'
+            f'<h3>{title}</h3><p>{body}</p>{ladder if i == len(steps) else ""}</li>'
+            for i, (ic, title, body) in enumerate(steps, 1))
+        all_link = f'<a class="sec-link" href="catalog/">Browse the catalog</a>' if n else ""
         body = f"""
-<section class="intro">
-<h1>Open-source drivers for macOS on PC hardware, tested by the people who use them</h1>
-<p class="lead">OpenKext is a community catalog of open-source kexts, driver ports and patches for hackintosh hardware, with public test reports and guides for writing your own drivers. Each entry links to the project's own repository and GitHub releases, with SHA-256 hashes the registry checks.</p>
-<p><a class="button" href="catalog/">Browse the catalog ({n} project{'s' if n != 1 else ''})</a> <a class="button secondary" href="docs/submit/">Submit a project</a></p>
-</section>
-<section aria-labelledby="how">
-<h2 id="how">How it works</h2>
-<ol class="points">
-<li><h3>Fixed rules approve listings</h3><p>A bot checks every pull request against published rules: open-source license, public source, release hashes. If they pass, it merges.</p></li>
-<li><h3>Test reports decide status</h3><p>A project becomes community-verified when {COMMUNITY_MIN} people who don't maintain it report its newest release working. Nobody sets a status by hand.</p></li>
-<li><h3>Maintainers handle edge cases</h3><p>Unlisted licenses, abandoned projects, removed reports and rule changes go to a person. Everything else goes through without waiting for one.</p></li>
-</ol>
-<p><a href="docs/governance/">Read the rules</a></p>
-</section>
-<section aria-labelledby="recent">
-<h2 id="recent">Recently released</h2>
-{cards}
-</section>
-<section class="cta" aria-labelledby="help">
-<h2 id="help">Take part</h2>
-<div class="cta-grid">
-<div><h3>Report a test</h3><p>Ran a driver from the catalog? Add a short TOML file with your result, macOS build and hardware. It takes a few minutes and it is what moves a project to verified.</p><p><a href="docs/report/">How to report a test</a></p></div>
-<div><h3>Submit a project</h3><p>Maintain an open-source kext, patch or porting tool? Add one file describing it and its releases. The bot answers in a couple of minutes.</p><p><a href="docs/submit/">How to submit</a></p></div>
-<div><h3>Write or port a driver</h3><p>Guides on building kexts, reading IOKit classes, porting drivers to new chips and new macOS versions, and the legal lines to stay inside.</p><p><a href="docs/driver-development/">Driver development guide</a></p></div>
+<div class="home">
+<section class="hero" aria-labelledby="hero-title">
+<div class="hero-main">
+<p class="eyebrow">Open-source hackintosh drivers</p>
+<h1 id="hero-title">Find a driver for your hardware <span class="hero-accent">and see who it works for</span></h1>
+<p class="lead">OpenKext lists open-source kexts, driver ports and patches for macOS on PC hardware. A project's status comes from test reports by people who don't maintain it.</p>
+<form class="hero-search" action="catalog/" method="get" role="search">
+<label class="hero-label" for="hero-q">Search by device ID or name</label>
+<div class="hero-field">{icon("search")}<input id="hero-q" type="search" name="q" placeholder="e.g. 8086:2725…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search"><button class="btn btn-primary" type="submit">Search</button></div>
+<p class="hero-hint">Your device IDs are in System Information, under PCI or USB, or in <code>lspci -nn</code> on Linux.</p>
+{try_html}
+</form>
+</div>
+<div class="hero-stats">
+<h2 class="sr-only">The catalog in numbers</h2>
+{tiles}
 </div>
 </section>
+<section class="panel pipeline-wrap" aria-labelledby="how">
+<div class="sec-head"><h2 id="how">How a driver gets its status</h2><a class="sec-link" href="docs/governance/">Read the rules</a></div>
+<ol class="pipeline">{pipe}</ol>
+<p class="small pipe-foot">Unlisted licenses, abandoned projects and removed reports go to a maintainer. Everything else follows the rules above.</p>
+</section>
+<section aria-labelledby="recent">
+<div class="sec-head"><h2 id="recent">Recently released</h2>{all_link}</div>
+{cards}
+</section>
+<section class="paths" aria-labelledby="help">
+<div class="sec-head"><h2 id="help">Take part</h2></div>
+<ul class="paths-grid">
+<li class="path path-main"><span class="path-ico">{icon("flask")}</span><h3>Test a driver</h3><p>Ran a driver from the catalog? A short file with your result, macOS build and hardware is what moves a project to community-verified.</p>{button("Report a test", "docs/report/")}</li>
+<li class="path"><span class="path-ico">{icon("upload")}</span><h3>Submit a driver</h3><p>Maintain an open-source kext, patch or porting tool? Add one file that describes it and its releases. The bot answers in a couple of minutes.</p>{button("Submit a project", "docs/submit/", "secondary")}</li>
+<li class="path"><span class="path-ico">{icon("code")}</span><h3>Write a driver</h3><p>Guides on building kexts, reading IOKit classes, porting drivers to new chips and new macOS versions, and the legal lines to stay inside.</p>{button("Read the guides", "docs/driver-development/", "secondary")}</li>
+</ul>
+</section>
+</div>
 """
         self.page("index.html", SITE_NAME, body)
 
@@ -743,43 +839,70 @@ class Site:
             for m in list(MACOS_NAMES) + [major_of(mac.get("min")), major_of(mac.get("max"))]:
                 if m and lo and hi and lo <= version_key(m) <= hi:
                     majors.add(m)
-            ids, words = [], [text(k.get("id")), text(k.get("name")), text(k.get("summary"))]
+            words = [text(k.get("id")), text(k.get("name")), text(k.get("summary"))]
             for h in items(k.get("hardware")):
                 h = obj(h)
-                ids += [text(x) for x in items(h.get("pci_ids")) + items(h.get("usb_ids"))]
                 words += [text(h.get("vendor")), text(h.get("description"))]
             index.append({
                 "id": text(k.get("id")),
                 "c": [text(c) for c in items(k.get("categories"))],
                 "s": text(obj(k.get("status")).get("status")),
                 "min": text(mac.get("min")), "max": text(mac.get("max")),
-                "q": " ".join(words + ids).lower(),
+                "d": self.latest_date(k),
+                "q": " ".join(words + self.hw_ids(k)).lower(),
             })
+        n = len(self.kexts)
         cats = sorted({c for e in index for c in e["c"]}, key=lambda c: CATEGORIES.get(c, c))
         opt = lambda v, label: f'<option value="{esc(v)}">{esc(label)}</option>'  # noqa: E731
         cat_opts = "".join(opt(c, CATEGORIES.get(c, c)) for c in cats)
-        st_opts = "".join(opt(s, label) for s, (label, _) in STATUSES.items())
         mac_opts = "".join(opt(m, f"macOS {m} {MACOS_NAMES.get(m, '')}".strip())
                            for m in sorted(majors, key=version_key, reverse=True))
+        seg = [("", "All", "", n)] + [
+            (s, STATUSES[s][0], STATUSES[s][1], sum(e["s"] == s for e in index))
+            for s in ("community-verified", "author-tested", "submitted", "reported-broken")]
+        segs = "".join(
+            f'<label class="seg"><input type="radio" name="status" value="{esc(v)}"{"" if v else " checked"}>'
+            f'<span class="seg-label">{dot(c)}{esc(label)} <span class="seg-n">{cnt}</span></span></label>'
+            for v, label, c, cnt in seg if cnt or not v)
         data = json.dumps(index, separators=(",", ":"), ensure_ascii=True)
         data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
         listing = "".join(self.card(k, base) for k in self.kexts)
-        n = len(self.kexts)
-        body = f"""
-<h1>Catalog</h1>
-<p class="lead">Open-source drivers, patches and porting tools for macOS on non-Apple hardware. Status comes from test reports; <a href="../docs/governance/">see how</a>.</p>
-<form id="filters" class="filters" role="search" hidden>
-<label>Search <input type="search" name="q" placeholder="Name or device ID, e.g. 8086:2725" autocomplete="off" spellcheck="false"></label>
-<label>Category <select name="category"><option value="">All</option>{cat_opts}</select></label>
-<label>Status <select name="status"><option value="">All</option>{st_opts}</select></label>
-<label>macOS <select name="macos"><option value="">Any</option>{mac_opts}</select></label>
+        if n:
+            no_match = empty_state(
+                "No projects match",
+                '<span id="empty-why">Nothing matches these filters.</span> '
+                "Device IDs look like <code>8086:2725</code>, vendor then device.",
+                '<button type="button" class="btn btn-secondary" id="empty-clear">Clear filters</button> '
+                '<a class="btn btn-ghost" href="../docs/submit/">Submit a project</a>')
+            empty = f'<div id="empty" hidden>{no_match}</div>'
+            finder = f"""<form id="filters" class="finder" role="search" hidden>
+<div class="finder-search"><label class="sr-only" for="cat-q">Search by name or device ID</label>{icon("search")}<input id="cat-q" type="search" name="q" placeholder="Name or ID, e.g. 8086:2725…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search"></div>
+<fieldset class="segmented"><legend class="sr-only">Status</legend>{segs}</fieldset>
+<div class="finder-row">
+<label class="field">Category <select name="category"><option value="">All categories</option>{cat_opts}</select></label>
+<label class="field">macOS <select name="macos"><option value="">Any version</option>{mac_opts}</select></label>
+<label class="field">Sort <select name="sort"><option value="">Name</option><option value="recent">Recently released</option></select></label>
+</div>
 </form>
-<p id="count" class="count" aria-live="polite">{n} project{'s' if n != 1 else ''}</p>
+<noscript><p class="small">Search and filters need JavaScript. Every project is listed below; your browser's find (Cmd+F or Ctrl+F) works for device IDs.</p></noscript>
+<div class="results-bar"><p id="count" class="count" aria-live="polite">{n} project{'s' if n != 1 else ''}</p><button type="button" class="btn btn-ghost btn-sm" id="clear" hidden>Clear filters</button></div>
 <ul id="kexts" class="cards list">{listing}</ul>
-<p id="empty" class="empty" {'hidden' if n else ''}>{'No projects match these filters.' if n else 'No projects yet. <a href="../docs/submit/">Submit the first one.</a>'}</p>
-<script type="application/json" id="catalog-data">{data}</script>
+{empty}
+<script type="application/json" id="catalog-data">{data}</script>"""
+        else:
+            finder = empty_state("No projects yet", "The catalog is waiting for its first entry.",
+                                 button("Submit a project", "../docs/submit/"))
+        body = f"""
+<div class="catalog">
+<header class="cat-head">
+<div><h1>Catalog</h1>
+<p class="lead">Open-source drivers, patches and porting tools for macOS on non-Apple hardware. Status comes from test reports, <a href="../docs/governance/">see how</a>.</p></div>
+{button("Submit a project", "../docs/submit/", "secondary")}
+</header>
+{finder}
+</div>
 """
-        self.page("catalog/index.html", "Catalog", body, active="catalog", script=CATALOG_JS,
+        self.page("catalog/index.html", "Catalog", body, active="catalog", script=CATALOG_JS if n else None,
                   desc="Open-source hackintosh drivers with their status, hardware IDs and supported macOS versions.")
 
     def status_text(self, k):
@@ -1127,24 +1250,36 @@ DOC_SOURCES = {
 }
 
 CATALOG_JS = r"""(function () {
-  var data = JSON.parse(document.getElementById("catalog-data").textContent);
   var form = document.getElementById("filters");
-  var list = document.querySelectorAll("#kexts > li");
+  var ul = document.getElementById("kexts");
+  if (!form || !ul) return;
+  var data = JSON.parse(document.getElementById("catalog-data").textContent);
+  var list = Array.prototype.slice.call(ul.children);
   var count = document.getElementById("count");
   var empty = document.getElementById("empty");
-  if (!form || !list.length) return;
+  var why = document.getElementById("empty-why");
+  var clear = document.getElementById("clear");
+  var el = form.elements, total = list.length, sorted = "";
+  var F = ["q", "status", "category", "macos", "sort"];
   var byId = {};
   data.forEach(function (k) { byId[k.id] = k; });
-  var el = form.elements;
   function key(v) {
     var p = String(v || "").match(/\d+/g);
     if (!p) return 0;
     var a = parseInt(p[0], 10);
     return a === 10 ? 1000 + (p[1] ? parseInt(p[1], 10) : 0) : a * 100;
   }
+  function val(f) { return el[f].value; }
+  function set(f, v) {
+    var e = el[f];
+    if (e.options || e.type) e.value = v;
+    else Array.prototype.forEach.call(e, function (r) { r.checked = r.value === v; });
+  }
+  function date(li) { var k = byId[li.getAttribute("data-id")]; return k ? k.d : ""; }
   function apply() {
-    var words = el.q.value.toLowerCase().split(/\s+/).filter(Boolean);
-    var c = el.category.value, s = el.status.value, m = key(el.macos.value), n = 0;
+    var words = val("q").toLowerCase().split(/\s+/).filter(Boolean)
+      .map(function (w) { return w.replace(/^0x/, ""); });
+    var c = val("category"), s = val("status"), m = key(val("macos")), n = 0;
     list.forEach(function (li) {
       var k = byId[li.getAttribute("data-id")];
       var ok = !!k;
@@ -1155,24 +1290,42 @@ CATALOG_JS = r"""(function () {
       li.hidden = !ok;
       if (ok) n++;
     });
-    count.textContent = n + (n === 1 ? " project" : " projects");
+    if (val("sort") !== sorted) {
+      sorted = val("sort");
+      var order = list.slice();
+      if (sorted === "recent") order.sort(function (a, b) { var x = date(a), y = date(b); return x > y ? -1 : x < y ? 1 : 0; });
+      order.forEach(function (li) { ul.appendChild(li); });
+    }
+    count.textContent = n === total ? total + (total === 1 ? " project" : " projects")
+      : "Showing " + n + " of " + total + (total === 1 ? " project" : " projects");
+    clear.hidden = !F.some(function (f) { return f !== "sort" && val(f); });
     empty.hidden = n !== 0;
+    why.textContent = val("q").trim() ? "Nothing matches “" + val("q").trim() + "” with these filters."
+      : "Nothing matches these filters.";
     var p = new URLSearchParams();
-    ["q", "category", "status", "macos"].forEach(function (f) { if (el[f].value) p.set(f, el[f].value); });
+    F.forEach(function (f) { if (val(f)) p.set(f, val(f)); });
     var qs = p.toString();
     history.replaceState(null, "", qs ? "?" + qs : location.pathname);
   }
+  function reset() {
+    ["q", "status", "category", "macos"].forEach(function (f) { set(f, ""); });
+    apply();
+    el.q.focus();
+  }
   var init = new URLSearchParams(location.search);
-  ["q", "category", "status", "macos"].forEach(function (f) {
+  F.forEach(function (f) {
     var v = init.get(f);
     if (v === null) return;
-    if (el[f].tagName === "SELECT" && !Array.prototype.some.call(el[f].options, function (o) { return o.value === v; })) return;
-    el[f].value = v;
+    var opts = el[f].options || el[f];
+    if (f !== "q" && !Array.prototype.some.call(opts, function (o) { return o.value === v; })) return;
+    set(f, v);
   });
   form.hidden = false;
   form.addEventListener("input", apply);
   form.addEventListener("change", apply);
   form.addEventListener("submit", function (e) { e.preventDefault(); });
+  clear.addEventListener("click", reset);
+  document.getElementById("empty-clear").addEventListener("click", reset);
   apply();
 })();"""
 

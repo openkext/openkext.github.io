@@ -13,7 +13,7 @@ The catalog itself lives in [openkext/registry](https://github.com/openkext/regi
 
 Catalog data is submitted by the community, so the generator treats it as untrusted: every value is HTML-escaped, only plain `https://` URLs become links, entries with an invalid `id` are skipped, and the JSON embedded in the catalog page is escaped so it can't close its `<script>` tag. Each page carries a Content-Security-Policy that allows no scripts except the catalog filter, by hash. The Markdown converter supports headings, paragraphs, lists, links, inline code, fenced code, tables, blockquotes, bold and italic, and escapes any raw HTML.
 
-The catalog page lists every project in plain HTML. A small inline script adds filtering by category, status, macOS version and search (name, PCI or USB ID); without JavaScript the full list is shown. There are no external scripts, fonts or trackers.
+The catalog page lists every project in plain HTML. A small inline script adds search (name, PCI or USB ID), a status control, category and macOS filters and sorting by name or newest release, all kept in the URL; without JavaScript the full list is shown. The search box on the home page is a plain form that opens the catalog with `?q=`. There are no external scripts, fonts or trackers.
 
 All links inside the site are relative, so it works on `openkext.github.io` today and on a custom domain later.
 

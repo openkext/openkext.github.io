@@ -211,7 +211,7 @@ class SiteTest(unittest.TestCase):
         page = self.read("catalog/index.html")
         self.assertIn('data-id="good-wifi"', page)
         self.assertIn('data-id="evil"', page)
-        self.assertIn('<form id="filters" class="filters" role="search" hidden>', page)
+        self.assertIn('<form id="filters" class="finder" role="search" hidden>', page)
 
     def test_project_page_content(self):
         page = self.read("kext/good-wifi/index.html")
@@ -386,6 +386,78 @@ class ComponentTest(unittest.TestCase):
         self.assertNotIn("<script>", weird)
         self.assertIn("0 of 3 testers", weird)
         self.assertIn("ladder-compact", build.status_ladder({}, compact=True))
+
+
+class HomeCatalogTest(SiteTest):
+    def test_home_search_goes_to_catalog(self):
+        page = self.read("index.html")
+        self.assertIn('<form class="hero-search" action="catalog/" method="get" role="search">', page)
+        self.assertIn('<label class="hero-label" for="hero-q">', page)
+        self.assertIn('id="hero-q" type="search" name="q"', page)
+        self.assertIn('<a class="hw-try" href="catalog/?q=8086%3A2723">', page)
+        self.assertIn("script-src 'none'", page)
+
+    def test_home_example_ids_are_escaped(self):
+        page = self.read("index.html")
+        self.assertNotIn("<u>", page)
+        self.assertIn('href="catalog/?q=%3Cu%3E"', page)
+
+    def test_home_stats(self):
+        self.assertEqual(self.site.totals(), {"projects": 2, "reports": 4, "verified": 1, "hw": 2})
+        page = self.read("index.html")
+        for label in ("Projects", "Test reports", "Community-verified", "Hardware IDs"):
+            self.assertIn(f'<span class="stat-label">{label}</span>', page)
+        self.assertEqual(page.count('class="pipe-step"'), 4)
+        self.assertEqual(page.count('<li class="path'), 3)
+
+    def test_cards_show_hardware_and_ladder(self):
+        page = self.read("catalog/index.html")
+        self.assertIn('<span class="chip chip-hw">8086:2723</span>', page)
+        self.assertIn('<span class="chip chip-hw">&lt;u&gt;</span>', page)
+        self.assertNotIn("<u>", page)
+        self.assertIn("ladder ladder-compact", page)
+        k = {"id": "many", "name": "Many", "hardware": [{"pci_ids": [f"8086:000{i}" for i in range(6)]}]}
+        card = self.site.card(k, "../")
+        self.assertEqual(card.count("chip chip-hw"), 4)
+        self.assertIn("+2 more", card)
+        self.assertNotIn("kcard-hw", self.site.card({"id": "none", "name": "None"}, "../"))
+
+    def test_status_segments_count_known_statuses_only(self):
+        page = self.read("catalog/index.html")
+        self.assertIn('<input type="radio" name="status" value="" checked>', page)
+        self.assertIn('value="community-verified">', page)
+        self.assertIn('Community-verified <span class="seg-n">1</span>', page)
+        self.assertIn('All <span class="seg-n">2</span>', page)
+        self.assertNotIn('value="submitted"', page)  # no project has it
+        self.assertNotIn('value="&lt;script&gt;"', page)
+
+    def test_catalog_sort_and_empty_state(self):
+        page = self.read("catalog/index.html")
+        self.assertIn('<option value="recent">Recently released</option>', page)
+        self.assertIn('<div id="empty" hidden>', page)
+        self.assertIn('id="empty-clear"', page)
+        self.assertIn('id="clear" hidden', page)
+        m = re.search(r'<script type="application/json" id="catalog-data">(.*?)</script>', page, re.S)
+        dates = {d["id"]: d["d"] for d in json.loads(m.group(1))}
+        self.assertEqual(dates, {"good-wifi": "2026-03-01", "evil": "2026-02-01"})
+
+    def test_empty_catalog(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            src = os.path.join(tmp, "c.json")
+            with open(src, "w") as f:
+                json.dump({"schema": 1, "kexts": []}, f)
+            build.build_site(src, os.path.join(tmp, "out"), None, BUILT)
+            with open(os.path.join(tmp, "out", "catalog", "index.html"), encoding="utf-8") as f:
+                cat = f.read()
+            with open(os.path.join(tmp, "out", "index.html"), encoding="utf-8") as f:
+                home = f.read()
+            for page in (cat, home):
+                self.assertIn('<p class="empty-title">No projects yet</p>', page)
+                self.assertIn("script-src 'none'", page)
+            self.assertNotIn('id="filters"', cat)
+        finally:
+            shutil.rmtree(tmp)
 
 
 class ShellTest(SiteTest):
