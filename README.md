@@ -1,6 +1,6 @@
 # openkext.github.io
 
-The website of OpenKext, a community catalog of open-source drivers (kexts), driver ports and driver-development guides for macOS on non-Apple hardware. Live at [openkext.github.io](https://openkext.github.io).
+The website of OpenKext, a community catalog of open-source drivers (kexts), driver ports and driver-development guides for macOS on non-Apple hardware. Live at [openkext.org](https://openkext.org).
 
 The catalog itself lives in [openkext/registry](https://github.com/openkext/registry). This repository only turns it into a static site. To list a project or report a test, open a pull request there, not here.
 
@@ -15,7 +15,7 @@ Catalog data is submitted by the community, so the generator treats it as untrus
 
 The catalog page lists every project in plain HTML. A small inline script adds search (name, PCI or USB ID), a status control, category and macOS filters and sorting by name or newest release, all kept in the URL; without JavaScript the full list is shown. The search box on the home page is a plain form that opens the catalog with `?q=`. There are no external scripts, fonts or trackers.
 
-All links inside the site are relative, so it works on `openkext.github.io` today and on a custom domain later.
+All links inside the site are relative, so it works on `openkext.org` and on `openkext.github.io` alike. The custom domain comes from the `CNAME` file; `openkext.com` redirects to `openkext.org` at Cloudflare.
 
 ## Output for LLMs and tools
 
