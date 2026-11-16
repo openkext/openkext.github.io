@@ -420,6 +420,143 @@ class ShellTest(SiteTest):
         self.assertNotIn("<img", page)
 
 
+class ProjectAndDocsPagesTest(unittest.TestCase):
+    """Project page (hero, downloads, report timeline, add-report block), docs and 404."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(FIXTURE, encoding="utf-8") as f:
+            cat = json.load(f)
+        busy = json.loads(json.dumps(cat["kexts"][0]))
+        busy.update(id="busy", name="Busy", hardware=[])
+        busy["releases"] = [
+            {"version": f"2.{i}.0", "tag": f"v2.{i}.0", "date": f"2026-0{i + 1}-10",
+             "assets": [{"name": f"a-{i}.zip", "sha256": "ab" * 32, "macos": "15"},
+                        {"name": f"b-{i}.zip", "sha256": "cd" * 32}]}
+            for i in range(4)]
+        latest = '2.3.0"; rm -rf ~ <b>'
+        busy["releases"][3]["version"] = latest
+        results = ["works", "partial", "broken", "broken", "broken", "works", "works", "works", "works", "broken"]
+        busy["reports"] = [
+            {"login": f"t{i}", "version": latest if i < 7 else "2.2.0", "result": r, "date": f"2026-06-{10 + i}",
+             "features": {"<f>": "<g>", "audio": r}}
+            for i, r in enumerate(results)]
+        busy["status"] = {"status": "reported-broken", "release": latest, "testers": ["t0", "t1"],
+                          "broken_reports": ["t2", "t3", "t4"], "author_tested": True}
+        cat["kexts"].append(busy)
+        cls.tmp = tempfile.mkdtemp()
+        src = os.path.join(cls.tmp, "catalog.json")
+        with open(src, "w", encoding="utf-8") as f:
+            json.dump(cat, f)
+        cls.out = os.path.join(cls.tmp, "_site")
+        build.build_site(src, cls.out, None, BUILT)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp)
+
+    def read(self, rel):
+        with open(os.path.join(self.out, *rel.split("/")), encoding="utf-8") as f:
+            return f.read()
+
+    def test_hero_downloads_the_only_file(self):
+        page = self.read("kext/good-wifi/index.html")
+        self.assertIn('<a class="btn btn-primary btn-lg" href="https://github.com/example/good-wifi/releases/'
+                      'download/v1.1.0/Good%201.1.0.zip">Download 1.1.0</a>', page)
+        self.assertIn('class="ladder', page)
+        self.assertIn('class="kx-status panel s-green"', page)
+        self.assertIn('<span class="stat-value">1.1.0</span>', page)
+        self.assertIn('<span class="stat-label">Newest release</span>', page)
+        self.assertIn('class="chip chip-hw">8086:2723</span>', page)
+        self.assertIn("How to find your device ID", page)
+
+    def test_older_releases_fold(self):
+        page = self.read("kext/good-wifi/index.html")
+        self.assertIn('<details class="kx-old">', page)
+        self.assertLess(page.index('class="kx-release panel"'), page.index('<details class="kx-old">'))
+
+    def test_many_files_point_to_the_list(self):
+        page = self.read("kext/busy/index.html")
+        self.assertIn('href="#download"', page)
+        self.assertIn("2 files in this release", page)
+        self.assertIn("macOS 15 Sequoia", page)
+        self.assertIn("Any macOS", page)
+        self.assertEqual(page.count('<details class="kx-old">'), 3)
+
+    def test_broken_project_leads_with_the_reports(self):
+        page = self.read("kext/busy/index.html")
+        self.assertIn('<a class="btn btn-primary btn-lg" href="#reports">Read the reports first</a>', page)
+        self.assertIn('class="btn btn-secondary btn-lg" href="#download"', page)
+        self.assertIn('class="kx-status panel s-red"', page)
+
+    def test_report_summary_and_timeline(self):
+        page = self.read("kext/busy/index.html")
+        # 7 reports on the newest release: 3 works, 1 partial, 3 broken
+        self.assertIn('<li class="r-green"><b class="num">3</b> works</li>', page)
+        self.assertIn('<li class="r-amber"><b class="num">1</b> partial</li>', page)
+        self.assertIn('<li class="r-red"><b class="num">3</b> broken</li>', page)
+        self.assertEqual(page.count('class="kx-seg '), 7)
+        # newest release first even though older-release reports are more recent
+        self.assertLess(page.index('href="https://github.com/t6"'), page.index('href="https://github.com/t9"'))
+        self.assertIn("Show 2 older reports", page)
+        self.assertEqual(page.count('<li class="kx-report '), 10)
+        self.assertIn('<li class="kx-feat r-neutral">&lt;f&gt; <span class="kx-feat-v">&lt;g&gt;</span></li>', page)
+        self.assertNotIn("<f>", page)
+        self.assertNotIn("<g>", page)
+
+    def test_make_report_command_is_quoted_and_escaped(self):
+        page = self.read("kext/busy/index.html")
+        self.assertNotIn("~ <b>", page)
+        self.assertIn("~ &lt;b&gt;", page)
+        quoted = build.esc(build.shlex.quote('2.3.0"; rm -rf ~ <b>'))
+        self.assertIn(f"python3 tools/make_report.py busy {quoted} works", page)
+        self.assertIn('data-lang="sh"', page)
+
+    def test_empty_states(self):
+        page = self.read("kext/busy/index.html")
+        self.assertIn("No hardware IDs listed", page)
+
+    def test_evil_hero_is_escaped(self):
+        page = self.read("kext/evil/index.html")
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;</h1>", page)
+        self.assertIn('class="kx-status panel s-neutral"', page)
+        self.assertNotIn("<x>", page)
+        self.assertNotIn("<v>", page)
+
+    def test_doc_layout(self):
+        page = self.read("docs/driver-development/index.html")
+        self.assertIn('<nav class="doc-rail" aria-label="On this page">', page)
+        self.assertIn('<section class="doc-callout" aria-labelledby="legal-boundaries">', page)
+        self.assertIn('rel="prev"', page)
+        self.assertIn('href="../../docs/porting-hardware/" rel="next"', page)
+        self.assertIn("min read", page)
+        self.assertIn('<p class="doc-nav-group">Write drivers</p>', page)
+        self.assertIn('<pre data-lang="sh"><code class="language-sh">', page)
+        first = self.read("docs/submit/index.html")
+        self.assertNotIn('rel="prev"', first)
+        last = self.read("docs/porting-macos/index.html")
+        self.assertNotIn('rel="next"', last)
+
+    def test_doc_enhance(self):
+        out = build.doc_enhance('<p>a</p><h2 id="legal-boundaries">L</h2><p>b</p><h2 id="x">X</h2>'
+                                '<pre><code class="language-toml">k</code></pre>')
+        self.assertIn('<p class="doc-callout-label">', out)
+        self.assertIn('<p>b</p></section><h2 id="x">', out)
+        self.assertIn('<pre data-lang="toml">', out)
+        self.assertEqual(build.doc_enhance("<pre><code>x</code></pre>"), "<pre><code>x</code></pre>")
+
+    def test_docs_index_is_task_cards(self):
+        page = self.read("docs/index.html")
+        self.assertEqual(page.count('<li class="doc-task">'), len(build.DOC_TASKS))
+        for slug, _, _ in build.DOCS:
+            self.assertIn(f'href="{slug}/"', page)
+
+    def test_404_links(self):
+        page = self.read("404.html")
+        for href in ("/catalog/", "/docs/", "/"):
+            self.assertIn(f'href="{href}"', page)
+
+
 class ProseTest(unittest.TestCase):
     def test_no_em_or_en_dashes(self):
         paths = [os.path.join(ROOT, "content", n) for n in os.listdir(os.path.join(ROOT, "content"))]

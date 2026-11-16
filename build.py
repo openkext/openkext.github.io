@@ -20,6 +20,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import shutil
 import sys
 import urllib.parse
@@ -556,6 +557,28 @@ def md_to_html(src, resolve=None, shift=0):
     return Markdown(resolve).render(src, shift)
 
 
+# ---------------------------------------------------------------- docs extras
+
+_PRE_LANG = re.compile(r'<pre><code class="language-([\w+.-]+)">')
+# Sections of the guides shown as a boxed note: heading id -> label above it.
+CALLOUT_SECTIONS = {"legal-boundaries": "Before you write any code"}
+
+
+def doc_enhance(h):
+    """Label fenced code with its language and box the CALLOUT_SECTIONS. h is trusted
+    Markdown output; language names only ever hold [\\w+.-]."""
+    h = _PRE_LANG.sub(lambda m: f'<pre data-lang="{m.group(1)}"><code class="language-{m.group(1)}">', h)
+    for hid, label in CALLOUT_SECTIONS.items():
+        start = h.find(f'<h2 id="{hid}">')
+        if start < 0:
+            continue
+        nxt = h.find("<h2 ", start + 1)
+        end = nxt if nxt >= 0 else len(h)
+        h = (h[:start] + f'<section class="doc-callout" aria-labelledby="{hid}">'
+             f'<p class="doc-callout-label">{label}</p>' + h[start:end] + "</section>" + h[end:])
+    return h
+
+
 # ---------------------------------------------------------------- page shell
 
 LOGO = ('<svg class="logo" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true" focusable="false">'
@@ -796,8 +819,8 @@ class Site:
             return (f"{len(testers)} people who don't maintain this project report release {rel} working or partly "
                     f"working: {people(testers)}.")
         if s == "reported-broken":
-            return (f"{len(broken)} people who don't maintain this project report release {rel} broken "
-                    f"({people(broken)}), more than report it working. Read their notes before installing.")
+            return (f"Reported broken on release {rel} by {people(broken)}, more than report it working. "
+                    f"Read their notes before installing.")
         need = max(0, COMMUNITY_MIN - len(testers))
         more = (f" {need} more report{'s' if need != 1 else ''} from people who don't maintain it "
                 f"will make it community-verified.") if need else ""
@@ -821,113 +844,243 @@ class Site:
         base = "../../"
         name = text(k.get("name")) or kid
         st = obj(k.get("status"))
+        status = text(st.get("status"))
+        latest = text(st.get("release"))
         repo = gh_repo(k.get("source"))
         maint = [text(m) for m in items(k.get("maintainers"))]
         maint_l = {m.lower() for m in maint}
-
-        links = [f'<a class="button" href="{esc(repo)}">Source</a>' if repo else
-                 f'<span>Source: {link_or_text(k.get("source"))}</span>']
-        if repo:
-            links.append(f'<a class="button secondary" href="{esc(repo)}/releases">Releases</a>')
-        if safe_https(k.get("homepage")):
-            links.append(f'<a class="button secondary" href="{esc(safe_https(k.get("homepage")))}">Homepage</a>')
-        links.append(f'<a class="button secondary" href="{REGISTRY_REPO}/blob/main/kexts/{q(kid)}/kext.toml">'
-                     f'Registry entry</a>')
-
         mac = obj(k.get("macos"))
-        rows = [
-            ("Kind", esc(text(k.get("kind")))),
-            ("Categories", ", ".join(esc(CATEGORIES.get(text(c), text(c))) for c in items(k.get("categories")))),
-            ("License", f"<code>{esc(text(k.get('license')))}</code>" +
-             (f" (file: <code>{esc(text(k.get('license_file')))}</code>)" if k.get("license_file") else "")),
-            ("Maintainers", ", ".join(link_or_text(f"https://github.com/{m}", m) if LOGIN_RE.match(m) else esc(m)
-                                      for m in maint)),
-            ("Tested on", f"macOS {esc(macos_label(text(mac.get('min'))))} to {esc(macos_label(text(mac.get('max'))))}"
-             if mac else "Not stated"),
-            ("AI disclosure", esc(text(k.get("ai_disclosure"))) or "Not stated"),
-        ]
-        based = items(k.get("based_on"))
-        if based:
-            rows.append(("Based on", "<ul class='plain'>" + "".join(f"<li>{link_or_text(b)}</li>" for b in based)
-                         + "</ul>"))
-        details = "".join(f"<dt>{a}</dt><dd>{b}</dd>" for a, b in rows if b)
+        homepage = safe_https(k.get("homepage"))
 
-        hw = items(k.get("hardware"))
-        if hw:
-            trs = "".join(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
-                    esc(text(obj(h).get("vendor"))), esc(text(obj(h).get("description"))),
-                    " ".join(f"<code>{esc(text(x))}</code>" for x in items(obj(h).get("pci_ids"))) or "",
-                    " ".join(f"<code>{esc(text(x))}</code>" for x in items(obj(h).get("usb_ids"))) or "")
-                for h in hw)
-            hw_html = ('<div class="table-wrap"><table><thead><tr><th>Vendor</th><th>Device</th><th>PCI IDs</th>'
-                       f'<th>USB IDs</th></tr></thead><tbody>{trs}</tbody></table></div>')
-        else:
-            hw_html = "<p>No hardware IDs listed.</p>"
+        def person(login):
+            return link_or_text(f"https://github.com/{login}", login) if LOGIN_RE.match(login) else esc(login)
+
+        def asset_url(tag, an):
+            return f"{repo}/releases/download/{q(tag)}/{q(an)}" if repo and tag and an else None
 
         rels = list(enumerate(items(k.get("releases"))))
         rels.sort(key=lambda p: (text(obj(p[1]).get("date")), p[0]), reverse=True)
-        rel_html = []
-        for _, r in rels:
-            r = obj(r)
+        rels = [obj(r) for _, r in rels]
+        newest = rels[0] if rels else {}
+        newest_assets = [obj(a) for a in items(newest.get("assets"))]
+        newest_tag = text(newest.get("tag"))
+        newest_ver = text(newest.get("version"))
+
+        # -- hero: who it is, where it stands, the one thing to do next
+        actions = []
+        if newest_assets:
+            only = asset_url(newest_tag, text(newest_assets[0].get("name"))) if len(newest_assets) == 1 else None
+            if status == "reported-broken":
+                actions.append(button("Read the reports first", "#reports", "primary", "lg"))
+            actions.append(button(f"Download {newest_ver}".strip(), only or "#download",
+                                  "secondary" if status == "reported-broken" else "primary", "lg"))
+        if repo:
+            actions.append(button("Source code", repo, "secondary", "lg"))
+        if homepage:
+            actions.append(button("Homepage", homepage, "ghost", "lg"))
+        source_text = "" if repo else f'<p class="kx-source small">Source: {link_or_text(k.get("source"))}</p>'
+        if newest_assets and len(newest_assets) > 1:
+            pick = (f'<p class="kx-pick small">{len(newest_assets)} files in this release. '
+                    f'<a href="#download">Pick the one for your macOS</a>.</p>')
+        else:
+            pick = ""
+        cats = "".join(category_chip(c) for c in items(k.get("categories")))
+        status_color = STATUSES.get(status, ("", "neutral"))[1]
+        hero = f"""
+<header class="kx-hero">
+<div class="kx-id">
+<div class="kx-title">{monogram(k, "lg")}<div><h1>{esc(name)}</h1><div class="chips kx-cats">{cats}</div></div></div>
+<p class="lead">{esc(text(k.get("summary")))}</p>
+<div class="btn-row">{"".join(actions)}</div>
+{pick}{source_text}
+</div>
+<section class="kx-status panel s-{status_color}" aria-labelledby="status">
+<h2 id="status" class="kx-panel-h">Status {status_badge(status)}</h2>
+{status_ladder(k)}
+<p class="kx-status-text">{self.status_text(k)}</p>
+<p class="small kx-status-foot">Status counts reports on the newest release only. <a href="{base}docs/governance/">How status works</a></p>
+</section>
+</header>"""
+
+        # -- facts strip
+        # reports on the newest release first (they decide the status), then newest first
+        reps = [obj(r) for r in items(k.get("reports"))]
+        reps.sort(key=lambda r: (bool(latest) and text(r.get("version")) == latest, text(r.get("date"))), reverse=True)
+        on_latest = [r for r in reps if latest and text(r.get("version")) == latest]
+        if mac:
+            lo, hi = text(mac.get("min")), text(mac.get("max"))
+            names = [MACOS_NAMES.get(major_of(v), "") for v in (lo, hi)]
+            mac_hint = " to ".join(dict.fromkeys(n for n in names if n)) or None
+            mac_tile = stat_tile("macOS", f"{lo} to {hi}" if lo != hi else lo, mac_hint)
+        else:
+            mac_tile = stat_tile("macOS", "Not stated")
+        rel_date = text(newest.get("date"))
+        tiles = [
+            stat_tile("Newest release", newest_ver or "None", f"Released {rel_date}" if rel_date else None),
+            mac_tile,
+            stat_tile("Test reports", str(len(reps)),
+                      f"{len(on_latest)} on {latest}" if latest else None),
+            stat_tile("License", text(k.get("license")) or "Not stated"),
+        ]
+        facts = f'<div class="kx-facts">{stat_tiles(tiles)}</div>'
+
+        # -- hardware
+        hw_cards = []
+        for h in items(k.get("hardware")):
+            h = obj(h)
+            rows = []
+            for label, key in (("PCI", "pci_ids"), ("USB", "usb_ids")):
+                ids = items(h.get(key))
+                if ids:
+                    rows.append(f'<div class="kx-ids"><span class="kx-ids-label">{label}</span>'
+                                f'{"".join(chip(text(x), "hw") for x in ids)}</div>')
+            vendor = text(h.get("vendor"))
+            vendor_html = f'<p class="kx-vendor">{esc(vendor)}</p>' if vendor else ""
+            hw_cards.append(
+                f'<li class="kx-hw-card">{vendor_html}'
+                f'<p class="kx-device">{esc(text(h.get("description"))) or "Unnamed device"}</p>{"".join(rows)}</li>')
+        if hw_cards:
+            hw_html = (f'<ul class="kx-hw">{"".join(hw_cards)}</ul>'
+                       '<details class="kx-hint"><summary>How to find your device ID</summary>'
+                       '<p>Match the <code>vendor:device</code> pair, for example <code>8086:2725</code>, to your card.</p>'
+                       '<ul><li>On macOS: System Information, then PCI or USB, shows the Vendor ID and Device ID.</li>'
+                       '<li>On Linux: <code>lspci -nn</code> for PCI cards, <code>lsusb</code> for USB devices.</li>'
+                       '<li>On Windows: Device Manager, open the device, Details, Hardware Ids. '
+                       '<code>VEN_8086&amp;DEV_2725</code> means <code>8086:2725</code>.</li></ul></details>')
+        else:
+            hw_html = empty_state("No hardware IDs listed",
+                                  "The maintainer has not listed PCI or USB IDs for this project. Check its README "
+                                  "for the devices it supports.")
+
+        # -- releases: newest open, older ones folded
+        def asset_rows(r):
+            tag = text(r.get("tag"))
+            out = []
+            for a in items(r.get("assets")):
+                a = obj(a)
+                an = text(a.get("name"))
+                url = asset_url(tag, an)
+                nm = f'<a class="kx-asset-name" href="{esc(url)}">{esc(an)}</a>' if url \
+                    else f'<span class="kx-asset-name">{esc(an)}</span>'
+                am = text(a.get("macos"))
+                mchip = chip(f"macOS {macos_label(am)}" if am else "Any macOS", "ver" if am else None)
+                out.append(f'<li class="kx-asset">{nm}<span class="kx-asset-meta">{mchip}'
+                           f'<span class="kx-sha"><span class="kx-sha-label">SHA-256</span>'
+                           f'{hash_chip(a.get("sha256"))}</span></span></li>')
+            return f'<ul class="kx-assets">{"".join(out)}</ul>' if out else '<p class="small">No files listed.</p>'
+
+        def rel_title(r):
             tag = text(r.get("tag"))
             title = esc(text(r.get("version")))
             if repo and tag:
                 title = f'<a href="{esc(repo)}/releases/tag/{q(tag)}">{title}</a>'
-            assets = []
-            for a in items(r.get("assets")):
-                a = obj(a)
-                an = text(a.get("name"))
-                nm = f'<a href="{esc(repo)}/releases/download/{q(tag)}/{q(an)}">{esc(an)}</a>' if repo and tag and an \
-                    else esc(an)
-                assets.append(f"<tr><td>{nm}</td><td>{esc(text(a.get('macos'))) or 'any'}</td>"
-                              f'<td><code class="hash">{esc(text(a.get("sha256")))}</code></td></tr>')
-            notes = f'<p class="notes">{esc(text(r.get("notes")))}</p>' if r.get("notes") else ""
-            rel_html.append(
-                f'<section class="release"><h3>{title}</h3>'
-                f'<p class="meta">Tag <code>{esc(tag)}</code> · {esc(text(r.get("date")))}</p>{notes}'
-                '<div class="table-wrap"><table><thead><tr><th>Asset</th><th>macOS</th><th>SHA-256</th></tr></thead>'
-                f'<tbody>{"".join(assets)}</tbody></table></div></section>')
+            return title
 
-        reps = sorted(items(k.get("reports")), key=lambda r: text(obj(r).get("date")), reverse=True)
-        rep_rows = []
-        for r in reps:
-            r = obj(r)
+        if rels:
+            r = newest
+            notes = f'<p class="notes kx-rel-notes">{esc(text(r.get("notes")))}</p>' if r.get("notes") else ""
+            is_status = latest and newest_ver == latest
+            dl_html = (f'<article class="kx-release panel"><div class="kx-rel-head"><h3>{rel_title(r)}</h3>'
+                       f'{chip("Newest", "ver") if is_status else ""}'
+                       f'<span class="meta">Tag <code>{esc(newest_tag)}</code> · {esc(rel_date)}</span></div>'
+                       f'{notes}{asset_rows(r)}'
+                       '<p class="small kx-verify">Files come from the project\'s GitHub release. Check one with '
+                       '<code>shasum -a 256 FILE</code> and compare it with the SHA-256 above.</p></article>')
+            older = []
+            for r in rels[1:]:
+                n = len(items(r.get("assets")))
+                notes = f'<p class="notes kx-rel-notes">{esc(text(r.get("notes")))}</p>' if r.get("notes") else ""
+                older.append(f'<details class="kx-old"><summary><span class="kx-old-v">{rel_title(r)}</span>'
+                             f'<span class="meta">{esc(text(r.get("date")))} · {n} file{"s" if n != 1 else ""}</span>'
+                             f'</summary><div class="kx-old-body"><p class="meta">Tag <code>{esc(text(r.get("tag")))}'
+                             f'</code></p>{notes}{asset_rows(r)}</div></details>')
+            if older:
+                dl_html += (f'<h3 class="kx-sub">Older releases ({len(older)})</h3>'
+                            f'<div class="kx-olds">{"".join(older)}</div>')
+        else:
+            dl_html = empty_state("No releases listed", "This entry has no releases with hashes yet.",
+                                  button("Source code", repo, "secondary") if repo else "")
+
+        # -- reports: summary bar, then a timeline of cards
+        counts = {}
+        for r in on_latest:
+            res = text(r.get("result"))
+            counts[res] = counts.get(res, 0) + 1
+        order = ["works", "partial", "broken", "untested"]
+        if on_latest:
+            segs = "".join(f'<span class="kx-seg r-{RESULTS[res]}"></span>'
+                           for res in order for _ in range(counts.get(res, 0)))
+            segs += "".join('<span class="kx-seg r-neutral"></span>'
+                            for res, c in counts.items() if res not in RESULTS for _ in range(c))
+            legend = "".join(f'<li class="r-{RESULTS[res]}"><b class="num">{counts[res]}</b> {res}</li>'
+                             for res in order if counts.get(res))
+            by_m = sum(1 for r in on_latest if text(r.get("login")).lower() in maint_l)
+            by_m = f' <span class="muted">({by_m} from a maintainer)</span>' if by_m else ""
+            summary = (f'<div class="kx-summary"><p class="kx-summary-h">Release <span class="mono">{esc(latest)}'
+                       f'</span>: {len(on_latest)} report{"s" if len(on_latest) != 1 else ""}{by_m}</p>'
+                       f'<div class="kx-bar" aria-hidden="true">{segs}</div><ul class="kx-legend">{legend}</ul></div>')
+        elif reps:
+            summary = (f'<p class="kx-summary small">No reports on release <span class="mono">{esc(latest)}</span> '
+                       'yet. The reports below are for older releases.</p>')
+        else:
+            summary = ""
+
+        def report_card(r):
             login = text(r.get("login"))
-            who = link_or_text(f"https://github.com/{login}", login) if LOGIN_RE.match(login) else esc(login)
+            who = person(login)
             if login.lower() in maint_l:
                 who += ' <span class="tag">maintainer</span>'
-            path = text(r.get("path"))
-            if path and re.match(r"^kexts/[\w./-]+$", path) and ".." not in path:
-                who += f'<br><a class="small" href="{REGISTRY_REPO}/blob/main/{esc(path)}">file</a>'
+            res = text(r.get("result"))
+            color = RESULTS.get(res, "neutral")
+            ver = text(r.get("version"))
+            old = '<span class="tag">older release</span>' if latest and ver != latest else ""
             m = obj(r.get("macos"))
             h = obj(r.get("hardware"))
-            hw_lines = [esc(text(h.get(f))) for f in ("cpu", "smbios", "board", "bootloader") if h.get(f)]
-            dev = " ".join(f"<code>{esc(text(x))}</code>" for x in items(h.get("device_ids")))
-            if dev:
-                hw_lines.append(dev)
-            feats = "".join(f"<li><code>{esc(fk)}</code> {result_badge(fv)}</li>"
+            mline = " ".join(x for x in [esc(macos_label(text(m.get("version")))) if m.get("version") else "",
+                                         f'<code>{esc(text(m.get("build")))}</code>' if m.get("build") else ""] if x)
+            hw = [esc(text(h.get(f))) for f in ("cpu", "smbios", "board", "bootloader") if h.get(f)]
+            dev = "".join(chip(text(x), "hw") for x in items(h.get("device_ids")))
+            facts_ = []
+            if ver:
+                asset = f' <span class="muted">{esc(text(r.get("asset")))}</span>' if r.get("asset") else ""
+                facts_.append(f"<dt>Release</dt><dd><span class=\"mono\">{esc(ver)}</span>{asset} {old}</dd>")
+            if mline:
+                facts_.append(f"<dt>macOS</dt><dd>{mline}</dd>")
+            if hw or dev:
+                facts_.append(f'<dt>Hardware</dt><dd>{" · ".join(hw)}{" " if hw and dev else ""}{dev}</dd>')
+            feats = "".join(f'<li class="kx-feat r-{RESULTS.get(text(fv), "neutral")}">{esc(fk)} '
+                            f'<span class="kx-feat-v">{esc(text(fv))}</span></li>'
                             for fk, fv in obj(r.get("features")).items())
-            asset = f'<br><span class="small">{esc(text(r.get("asset")))}</span>' if r.get("asset") else ""
-            rep_rows.append(
-                f"<tr><td>{who}</td><td>{result_badge(r.get('result'))}</td>"
-                f"<td>{esc(text(r.get('version')))}{asset}</td>"
-                f"<td>{esc(text(m.get('version')))}<br><code>{esc(text(m.get('build')))}</code></td>"
-                f"<td>{'<br>'.join(hw_lines)}</td>"
-                f"<td>{FEATS_OPEN + feats + '</ul>' if feats else ''}</td>"
-                f'<td class="notes">{esc(text(r.get("notes")))}</td>'
-                f"<td>{esc(text(r.get('date')))}</td></tr>")
-        if rep_rows:
-            rep_html = ('<div class="table-wrap"><table class="reports"><thead><tr><th>Tester</th><th>Result</th>'
-                        '<th>Release</th><th>macOS</th><th>Hardware</th><th>Features</th><th>Notes</th>'
-                        f'<th>Date</th></tr></thead><tbody>{"".join(rep_rows)}</tbody></table></div>')
-        else:
-            rep_html = "<p>No test reports yet.</p>"
+            feats = f'<ul class="kx-feats" aria-label="Features">{feats}</ul>' if feats else ""
+            notes = f'<p class="notes kx-note">{esc(text(r.get("notes")))}</p>' if r.get("notes") else ""
+            path = text(r.get("path"))
+            link = ""
+            if path and re.match(r"^kexts/[\w./-]+$", path) and ".." not in path:
+                link = f'<a class="small kx-file" href="{REGISTRY_REPO}/blob/main/{esc(path)}">Report file</a>'
+            date = text(r.get("date"))
+            when = (f'<time datetime="{esc(date)}">{esc(date)}</time>' if re.match(r"^\d{4}-\d{2}-\d{2}$", date)
+                    else esc(date))
+            return (f'<li class="kx-report r-{color}"><article>'
+                    f'<header class="kx-report-head">{result_badge(res)}<span class="kx-who">{who}</span>'
+                    f'<span class="meta kx-when">{when}</span></header>'
+                    f'<dl class="kx-report-facts">{"".join(facts_)}</dl>{feats}{notes}{link}</article></li>')
 
-        # A report template for this project, prefilled with the newest release.
-        latest = text(st.get("release"))
-        newest = obj(rels[0][1]) if rels else {}
-        first_asset = text(obj((items(newest.get("assets")) or [{}])[0]).get("name"))
+        shown, more = reps[:REPORTS_SHOWN], reps[REPORTS_SHOWN:]
+        if reps:
+            rep_html = summary + f'<ol class="kx-timeline">{"".join(report_card(r) for r in shown)}</ol>'
+            if more:
+                rep_html += (f'<details class="kx-more"><summary>Show {len(more)} older report'
+                             f'{"s" if len(more) != 1 else ""}</summary>'
+                             f'<ol class="kx-timeline">{"".join(report_card(r) for r in more)}</ol></details>')
+        else:
+            rep_html = empty_state("No test reports yet",
+                                   "Nobody has reported a test of this project. Yours would be the first, and "
+                                   f"{COMMUNITY_MIN} reports from people who don't maintain it make it "
+                                   "community-verified.",
+                                   '<a href="#add-report">Add the first report</a>')
+
+        # -- add your report: the script first, the hand-written template folded
+        first_asset = text(newest_assets[0].get("name")) if newest_assets else ""
         tmpl = "\n".join([
             f"kext = {json.dumps(kid)}",
             f"version = {json.dumps(latest)}",
@@ -950,30 +1103,76 @@ class Site:
         fname = re.sub(r"[^a-z0-9._-]", "-", latest.lower()) or "report"
         new_url = (f"{REGISTRY_REPO}/new/main/kexts/{q(kid)}/reports?filename="
                    f"{q('YOUR-LOGIN/' + fname + '-BUILD.toml')}&value={q(tmpl)}")
+        cmd = "\n".join([
+            f"git clone {REGISTRY_REPO}.git && cd registry",
+            f"python3 tools/make_report.py {kid} {shlex.quote(latest or 'VERSION')} works \\",
+            "    --login YOUR-LOGIN --write",
+        ])
+        add = f"""
+<section aria-labelledby="add-report" class="kx-add">
+<div class="kx-add-intro">
+<p class="eyebrow">Tested it?</p>
+<h2 id="add-report">Add your report</h2>
+<p>A report is a short file with your result, macOS build and hardware. {COMMUNITY_MIN} reports from people who don't maintain the project make it community-verified.</p>
+</div>
+<ol class="kx-steps">
+<li><p><strong>Run the script on the Mac you tested.</strong> It reads the macOS version, build, CPU and model from the system. Change <code>works</code> to <code>partial</code> or <code>broken</code> if needed.</p>
+<pre class="kx-cmd" data-lang="sh"><code>{esc(cmd)}</code></pre></li>
+<li><p><strong>Open a pull request</strong> with the file it wrote under <code>kexts/{esc(kid)}/reports/</code>. A bot checks it in a couple of minutes.</p></li>
+</ol>
+<details class="kx-hint"><summary>No terminal? Fill in the template on GitHub</summary>
+<p>Save it as <code>kexts/{esc(kid)}/reports/YOUR-LOGIN/{esc(fname)}-BUILD.toml</code> in the registry. Replace YOUR-LOGIN and BUILD in the file name.</p>
+<pre data-lang="toml"><code>{esc(tmpl)}</code></pre>
+<p>{button("Open the template in the GitHub editor", new_url, "secondary")}</p>
+</details>
+<p class="small"><a href="{base}docs/report/">Report format and tips</a></p>
+</section>"""
+
+        # -- about: the quieter facts, in a side column on wide screens
+        rows = [
+            ("Kind", esc(text(k.get("kind")))),
+            ("License", f"<code>{esc(text(k.get('license')))}</code>" +
+             (f'<br><span class="small">File <code>{esc(text(k.get("license_file")))}</code></span>'
+              if k.get("license_file") else "")),
+            ("Maintainers", ", ".join(person(m) for m in maint)),
+            ("AI disclosure", esc(text(k.get("ai_disclosure"))) or "Not stated"),
+        ]
+        based = items(k.get("based_on"))
+        if based:
+            rows.append(("Based on", '<ul class="plain kx-based">' +
+                         "".join(f"<li>{link_or_text(b, text(b).removeprefix('https://'))}</li>" for b in based) + "</ul>"))
+        about = "".join(f"<dt>{a}</dt><dd>{b}</dd>" for a, b in rows if b)
+        links = []
+        if repo:
+            links.append(f'<li><a href="{esc(repo)}">Source code</a></li>')
+            links.append(f'<li><a href="{esc(repo)}/releases">All releases on GitHub</a></li>')
+        if homepage:
+            links.append(f'<li><a href="{esc(homepage)}">Homepage</a></li>')
+        links.append(f'<li><a href="{REGISTRY_REPO}/blob/main/kexts/{q(kid)}/kext.toml">Registry entry</a></li>')
+        links.append(f'<li><a href="{base}api/kexts/{esc(kid)}.json">This entry as JSON</a></li>')
+        side = f"""
+<aside class="kx-side" aria-labelledby="about">
+<div class="panel">
+<h2 id="about" class="kx-panel-h">About</h2>
+<dl class="kx-about">{about}</dl>
+<h3 class="kx-panel-h kx-links-h">Links</h3>
+<ul class="plain kx-links">{"".join(links)}</ul>
+</div>
+</aside>"""
 
         body = f"""
-<nav class="crumbs" aria-label="Breadcrumb"><a href="{base}catalog/">Catalog</a> / <span>{esc(name)}</span></nav>
-<header class="kext-head">
-<h1>{esc(name)}</h1>
-{status_badge(text(st.get("status")))}
-<p class="lead">{esc(text(k.get("summary")))}</p>
-<p class="actions">{" ".join(links)}</p>
-</header>
-<section aria-labelledby="status"><h2 id="status">Status</h2>
-<p>{status_badge(text(st.get("status")))} {self.status_text(k)}</p>
-<p class="small">Status is computed from test reports of the newest release. <a href="{base}docs/governance/">How status works</a>.</p>
-</section>
-<section aria-labelledby="details"><h2 id="details">Details</h2><dl class="details">{details}</dl></section>
-<section aria-labelledby="hardware"><h2 id="hardware">Hardware</h2>{hw_html}</section>
-<section aria-labelledby="releases"><h2 id="releases">Releases</h2>
-<p class="small">Downloads come from the project's GitHub releases. Check the SHA-256 with <code>shasum -a 256 FILE</code>.</p>
-{"".join(rel_html) or "<p>No releases listed.</p>"}</section>
-<section aria-labelledby="reports"><h2 id="reports">Test reports ({len(reps)})</h2>{rep_html}</section>
-<section aria-labelledby="add-report" class="cta"><h2 id="add-report">Add your report</h2>
-<p>Tested this project? Save this as <code>kexts/{esc(kid)}/reports/YOUR-LOGIN/{esc(fname)}-BUILD.toml</code> in the registry, fill it in, and open a pull request. <a href="{base}docs/report/">Report format</a>.</p>
-<pre><code>{esc(tmpl)}</code></pre>
-<p><a class="button" href="{esc(new_url)}">Open it in the GitHub editor</a> <span class="small">Replace YOUR-LOGIN and BUILD in the file name first.</span></p>
-</section>
+{breadcrumbs([("Catalog", base + "catalog/"), (name, None)])}
+{hero}
+{facts}
+<div class="kx-layout">
+<div class="kx-main">
+<section aria-labelledby="hardware"><h2 id="hardware">Supported hardware</h2>{hw_html}</section>
+<section aria-labelledby="download" id="releases"><h2 id="download">Download</h2>{dl_html}</section>
+<section aria-labelledby="reports"><h2 id="reports">Test reports <span class="kx-count num">{len(reps)}</span></h2>{rep_html}</section>
+{add}
+</div>
+{side}
+</div>
 """
         import llm
         self.page(rel_path, name, body, active="catalog", desc=text(k.get("summary"))[:280],
@@ -1018,6 +1217,7 @@ class Site:
         base = "../../"
         md = None
         html_parts = []
+        words = 0
         for kind, rel, shift, wrap_id in parts:
             if kind == "content":
                 with open(os.path.join(HERE, "content", rel), encoding="utf-8") as f:
@@ -1029,28 +1229,52 @@ class Site:
                 if src is None:
                     print(f"warning: registry file {rel} not found, linking to GitHub instead", file=sys.stderr)
                     src = f"# {title}\n\nRead [{rel}]({REGISTRY_REPO}/blob/main/{rel}) in the registry.\n"
+            words += len(src.split())
             if md is None:
                 md = Markdown(resolve)
             md.resolve = resolve
-            h = md.render(src, shift)
+            h = doc_enhance(md.render(src, shift))
             html_parts.append(f'<section id="{wrap_id}">{h}</section>' if wrap_id else h)
         toc = "".join(f'<li><a href="#{esc(i)}">{t}</a></li>' for _, i, t in md.toc)
-        cur = ' aria-current="page"'
-        side = "".join(
-            f'<li><a href="{base}docs/{s}/"{cur if s == slug else ""}>{esc(t)}</a></li>'
-            for s, t, _ in DOCS)
         content = "".join(html_parts)
+        group = next((g for g, slugs in DOC_GROUPS if slug in slugs), "")
+        minutes = max(1, round(words / 220))
+        meta = f'<p class="doc-meta">{minutes} min read</p>'
+        box = ""
         if len(md.toc) > 2:
-            box = f'<details class="toc"><summary>On this page</summary><ul>{toc}</ul></details>'
-            end = content.find("</h1>")
-            content = content[:end + 5] + box + content[end + 5:] if end >= 0 else box + content
+            box = f'<details class="toc doc-toc-inline"><summary>On this page</summary><ul>{toc}</ul></details>'
+        end = content.find("</h1>")
+        content = content[:end + 5] + meta + box + content[end + 5:] if end >= 0 else meta + box + content
+        rail = (f'<nav class="doc-rail" aria-label="On this page"><p class="doc-rail-h">On this page</p>'
+                f'<ul>{toc}</ul></nav>') if len(md.toc) > 2 else ""
+
+        # prev / next in reading order
+        order = [s for s, _, _ in DOCS]
+        i = order.index(slug)
+        pager = []
+        for j, cls, label in ((i - 1, "prev", "Previous"), (i + 1, "next", "Next")):
+            if 0 <= j < len(DOCS):
+                s, t, _ = DOCS[j]
+                pager.append(f'<a class="doc-pager-{cls}" href="{base}docs/{s}/" rel="{cls}">'
+                             f'<span class="doc-pager-label">{label}</span><span class="doc-pager-title">{esc(t)}</span></a>')
+        pager_html = f'<nav class="doc-pager" aria-label="More guides">{"".join(pager)}</nav>'
+
+        cur = ' aria-current="page"'
+        titles = {s: t for s, t, _ in DOCS}
+        side = "".join(
+            f'<p class="doc-nav-group">{esc(g)}</p><ul>' + "".join(
+                f'<li><a href="{base}docs/{s}/"{cur if s == slug else ""}>{esc(titles[s])}</a></li>' for s in slugs)
+            + "</ul>" for g, slugs in DOC_GROUPS)
         body = f"""
-<div class="docs">
-<nav class="docs-nav" aria-label="Docs"><p class="nav-title"><a href="{base}docs/">Docs</a></p><ul>{side}</ul></nav>
-<article class="prose">
+<div class="docs doc-layout{' has-rail' if rail else ''}">
+<nav class="docs-nav doc-side" aria-label="Docs"><p class="nav-title"><a href="{base}docs/">All docs</a></p>{side}</nav>
+<article class="prose doc-article">
+<p class="eyebrow doc-eyebrow">{esc(group)}</p>
 {content}
-<p class="edit small"><a href="{esc(edit_url)}">Edit this page on GitHub</a></p>
+{pager_html}
+<p class="edit small"><a href="{esc(edit_url)}">Edit this page on GitHub</a>. Something wrong or unclear? Open an issue or a pull request.</p>
 </article>
+{rail}
 </div>
 """
         active = slug if slug in ("submit", "report") else "docs"
@@ -1060,18 +1284,39 @@ class Site:
         for slug, title, desc in DOCS:
             parts, edit = DOC_SOURCES[slug]
             self.doc_page(slug, title, desc, parts, edit)
-        lis = "".join(f'<li><a href="{s}/">{esc(t)}</a><p>{esc(d)}</p></li>' for s, t, d in DOCS)
+        titles = {s: (t, d) for s, t, d in DOCS}
+        tasks = []
+        for n, (ask, slug, action, extra) in enumerate(DOC_TASKS, 1):
+            t, d = titles[slug]
+            more = "".join(f'<li><a href="{s}/">{esc(titles[s][0])}</a></li>' for s in extra)
+            more = f'<ul class="doc-task-more">{more}</ul>' if more else ""
+            tasks.append(f'<li class="doc-task"><span class="doc-task-n" aria-hidden="true">{n:02d}</span>'
+                         f'<h2><a href="{slug}/">{esc(ask)}</a></h2><p>{esc(d)}</p>'
+                         f'<p class="doc-task-go" aria-hidden="true">{esc(action)}</p>{more}</li>')
         body = f"""
-<h1>Docs</h1>
-<p class="lead">How to take part in the catalog, how decisions are made, and how to write and port macOS drivers.</p>
-<ul class="doc-list">{lis}</ul>
+<header class="doc-index-head">
+<p class="eyebrow">Docs</p>
+<h1>What do you want to do?</h1>
+<p class="lead">Pick the task. Each guide is short, and the catalog rules apply the same way to everyone.</p>
+</header>
+<ul class="doc-tasks">{"".join(tasks)}</ul>
 """
-        self.page("docs/index.html", "Docs", body, active="docs")
+        self.page("docs/index.html", "Docs", body, active="docs",
+                  desc="Guides for listing a driver, reporting a test, the catalog rules, and writing or porting macOS drivers.")
 
     def not_found(self):
         body = """
-<h1>Page not found</h1>
-<p>Nothing here. Try the <a href="/catalog/">catalog</a> or the <a href="/docs/">docs</a>.</p>
+<section class="nf">
+<p class="nf-code" aria-hidden="true">404</p>
+<h1>This page isn't here</h1>
+<p class="lead">The link may be old, or the project may have left the catalog. These usually help:</p>
+<ul class="nf-links">
+<li><a href="/catalog/"><span class="nf-t">Search the catalog</span><span class="nf-d">By name or device ID, for example 8086:2725.</span></a></li>
+<li><a href="/docs/"><span class="nf-t">Read the docs</span><span class="nf-d">Listing a driver, reporting a test, writing drivers.</span></a></li>
+<li><a href="/"><span class="nf-t">Go to the home page</span><span class="nf-d">What OpenKext is and how it works.</span></a></li>
+</ul>
+<p class="small">Followed a broken link on this site? <a href="https://github.com/openkext/openkext.github.io/issues">Tell us on GitHub</a>.</p>
+</section>
 """
         self.page("404.html", "Page not found", body, absolute=True)
 
@@ -1111,6 +1356,17 @@ DOCS = [
      "Find what a new macOS release broke and fix it without guessing."),
 ]
 DOC_SLUGS = {s for s, _, _ in DOCS}
+DOC_GROUPS = [("Take part", ["submit", "report", "governance"]),
+              ("Write drivers", ["driver-development", "porting-hardware", "porting-macos"])]
+DOC_TASKS = [
+    # (question, guide, call to action, related guides)
+    ("I want to list a driver", "submit", "Submit a project", []),
+    ("I tested a driver", "report", "Report a test", []),
+    ("I'm writing or porting a driver", "driver-development", "Start with the driver guide",
+     ["porting-hardware", "porting-macos"]),
+    ("How are listings and status decided?", "governance", "Read the rules", []),
+]
+REPORTS_SHOWN = 8  # newest reports shown on a project page; the rest fold into a <details>
 DOC_SOURCES = {
     # slug: ([(kind, path, heading shift, wrapper id)], edit URL)
     "submit": ([("content", "submit.md", 0, None), ("registry", "docs/kext-format.md", 1, "format")],
