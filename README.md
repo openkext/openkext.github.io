@@ -17,6 +17,18 @@ The catalog page lists every project in plain HTML. A small inline script adds f
 
 All links inside the site are relative, so it works on `openkext.github.io` today and on a custom domain later.
 
+## Output for LLMs and tools
+
+`llm.py` writes, next to the HTML:
+
+- `llms.txt` and `llms-full.txt` ([llmstxt.org](https://llmstxt.org) format);
+- an `index.md` Markdown version of every page (linked from each page's `<head>` as `rel="alternate"`);
+- a static JSON API: `api/index.json`, `api/kexts/<id>.json` and `api/hardware.json` (PCI/USB id to projects);
+- the registry's JSON Schemas under `schema/`;
+- schema.org JSON-LD on project pages, `sitemap.xml`, and a `robots.txt` that welcomes AI crawlers.
+
+Absolute URLs use `https://<CNAME>` when a `CNAME` file exists, otherwise `https://openkext.github.io` (override with `OPENKEXT_SITE_URL`). Community text in Markdown is flattened to one line with Markdown syntax escaped, and project pages mark which fields are submitted data.
+
 ## Run it locally
 
 With the registry checked out next to this repository:

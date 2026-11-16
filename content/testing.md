@@ -9,6 +9,17 @@ Test reports are what give a project its status. A project becomes community-ver
 3. Fill in the result, your macOS version and build (`sw_vers`), and your hardware. List the features you tried under `[features]`.
 4. Open a pull request with that one file. The bot checks it and merges it if it passes.
 
+## Faster: let the script fill it in
+
+On the Mac you tested, from a clone of the registry:
+
+```sh
+python3 tools/make_report.py <id> <version> works --device 8086:2725 \
+    --feature wifi=works --notes "what you tested" --login <your-github-login> --write
+```
+
+It fills in your macOS version and build, CPU and SMBIOS model (nothing else: no serial numbers or MAC addresses), saves the file in your folder and checks it. An AI coding agent can run it for you; [AGENTS.md](https://github.com/openkext/registry/blob/main/AGENTS.md) tells it how. Read the file before you send it.
+
 ## What makes a useful report
 
 - Say what you tested and what you didn't. "Wi-Fi works, sleep untested" is more useful than "works".

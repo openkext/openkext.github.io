@@ -444,7 +444,7 @@ class Site:
             f.write(content)
         self.written.append(rel)
 
-    def page(self, rel, title, body, *, desc="", active=None, script=None, absolute=False):
+    def page(self, rel, title, body, *, desc="", active=None, script=None, absolute=False, jsonld=None):
         depth = rel.count("/")
         base = "/" if absolute else "../" * depth or "./"
         csp_script = "'none'"
@@ -459,6 +459,13 @@ class Site:
         nav = "".join(
             f'<li><a href="{base}{href}"{cur if key == active else ""}>{label}</a></li>'
             for href, label, key in NAV)
+        extra_head = ""
+        if rel.endswith("index.html"):
+            extra_head += '<link rel="alternate" type="text/markdown" href="index.md">\n'
+        extra_head += f'<link rel="alternate" type="text/plain" title="LLM index" href="{base}llms.txt">\n'
+        extra_head += f'<link rel="sitemap" type="application/xml" href="{base}sitemap.xml">\n'
+        if jsonld:
+            extra_head += f'<script type="application/ld+json">{jsonld}</script>\n'
         full_title = f"{title} · {SITE_NAME}" if title != SITE_NAME else SITE_NAME
         when = self.built.strftime("%Y-%m-%d %H:%M UTC")
         doc = f"""<!doctype html>
@@ -473,7 +480,7 @@ class Site:
 <meta name="description" content="{esc(desc or 'Open-source hackintosh drivers, ports and driver-development guides, with test reports from the community.')}">
 <link rel="icon" href="{base}assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="{base}assets/style.css">
-</head>
+{extra_head}</head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="site-header"><div class="wrap">
@@ -793,7 +800,9 @@ class Site:
 <p><a class="button" href="{esc(new_url)}">Open it in the GitHub editor</a> <span class="small">Replace YOUR-LOGIN and BUILD in the file name first.</span></p>
 </section>
 """
-        self.page(rel_path, name, body, active="catalog", desc=text(k.get("summary"))[:280])
+        import llm
+        self.page(rel_path, name, body, active="catalog", desc=text(k.get("summary"))[:280],
+                  jsonld=llm.kext_jsonld(k, llm.site_url()))
 
     # -- docs
     def registry_file(self, rel):
@@ -909,6 +918,8 @@ class Site:
             self.kext_page(k)
         self.docs()
         self.not_found()
+        import llm
+        llm.build_llm(self)
         for s in self.skipped:
             print(f"warning: skipped entry with invalid id {s!r}", file=sys.stderr)
 
