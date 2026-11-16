@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "kexts": [
+    {
+      "id": "good-wifi",
+      "name": "Good Wi-Fi",
+      "summary": "A well-behaved Wi-Fi driver.",
+      "kind": "kext",
+      "categories": ["wifi"],
+      "source": "https://github.com/example/good-wifi",
+      "license": "GPL-2.0-only",
+      "maintainers": ["alice"],
+      "ai_disclosure": "none",
+      "homepage": "https://example.org/good-wifi",
+      "based_on": ["https://github.com/OpenIntelWireless/itlwm"],
+      "hardware": [{"vendor": "intel", "description": "Intel AX200", "pci_ids": ["8086:2723"]}],
+      "macos": {"min": "14.0", "max": "15.6"},
+      "releases": [
+        {"version": "1.0.0", "tag": "v1.0.0", "date": "2026-01-01",
+         "assets": [{"name": "Good-1.0.0.zip", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}]},
+        {"version": "1.1.0", "tag": "v1.1.0", "date": "2026-03-01", "notes": "Second release.",
+         "assets": [{"name": "Good 1.1.0.zip", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "macos": "15"}]}
+      ],
+      "status": {"status": "community-verified", "release": "1.1.0", "testers": ["bob", "carol", "dave"],
+                 "broken_reports": [], "author_tested": true, "reports_total": 3},
+      "reports": [
+        {"login": "bob", "kext": "good-wifi", "version": "1.1.0", "result": "works", "date": "2026-03-02",
+         "path": "kexts/good-wifi/reports/bob/1.1.0.toml",
+         "macos": {"version": "15.6", "build": "24G84"},
+         "hardware": {"cpu": "Intel Core i5-8500", "smbios": "iMac19,1", "device_ids": ["8086:2723"]},
+         "features": {"wifi": "works", "sleep-wake": "partial"}, "notes": "Fine.\nSecond line."},
+        {"login": "carol", "kext": "good-wifi", "version": "1.1.0", "result": "partial", "date": "2026-03-03",
+         "macos": {"version": "14.7", "build": "23H124"}, "hardware": {"cpu": "AMD Ryzen 5 5600G", "smbios": "MacPro7,1"}}
+      ]
+    },
+    {
+      "id": "evil",
+      "name": "<img src=x onerror=alert(1)>",
+      "summary": "<script>alert('summary')</script></script><!--",
+      "kind": "<b>kext</b>",
+      "categories": ["audio", "<svg onload=alert(1)>"],
+      "source": "javascript:alert('source')",
+      "license": "MIT\"><script>alert(1)</script>",
+      "license_file": "<i>LICENSE</i>",
+      "maintainers": ["<b>mallory</b>", "eve"],
+      "ai_disclosure": "<a href=javascript:alert(1)>x</a>",
+      "homepage": "javascript:alert('homepage')",
+      "based_on": [
+        "javascript:alert('based_on')",
+        "JaVaScRiPt:alert(2)",
+        "http://insecure.example/x",
+        "data:text/html,<script>alert(3)</script>",
+        "https://ok.example/upstream",
+        "https://bad.example/\"onmouseover=alert(4)",
+        "https://user@evil.example/"
+      ],
+      "hardware": [{"vendor": "<x>", "description": "</td><script>alert(5)</script>", "usb_ids": ["<u>"]}],
+      "macos": {"min": "12<script>", "max": "26"},
+      "releases": [
+        {"version": "<v>", "tag": "\"><script>alert(6)</script>", "date": "2026-02-01",
+         "notes": "<script>alert(7)</script>",
+         "assets": [{"name": "<a>.zip", "sha256": "<sha>"}]}
+      ],
+      "status": {"status": "<script>", "release": "<v>", "testers": ["<t>"], "broken_reports": [],
+                 "author_tested": false, "reports_total": 1},
+      "reports": [
+        {"login": "\"><script>alert(8)</script>", "version": "<v>", "result": "<b>works</b>", "date": "2026-02-02",
+         "path": "../../../etc/passwd",
+         "macos": {"version": "<m>", "build": "<b>"},
+         "hardware": {"cpu": "<cpu>", "device_ids": ["<d>"]},
+         "features": {"<f>": "<g>"},
+         "notes": "</script><script>alert(9)</script>"}
+      ]
+    },
+    {
+      "id": "../../escape",
+      "name": "Bad id",
+      "summary": "Must be skipped.",
+      "releases": [],
+      "status": {"status": "submitted"}
+    }
+  ]
+}

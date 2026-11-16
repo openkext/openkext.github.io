@@ -1,0 +1,6 @@
+_site/
+/catalog.json
+/registry/
+__pycache__/
+*.pyc
+.DS_Store
