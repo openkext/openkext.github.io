@@ -147,6 +147,155 @@ def result_badge(result):
     return badge(r or "unknown", RESULTS.get(r, "neutral"))
 
 
+# ---------------------------------------------------------------- shared components
+# Small HTML builders for the components in static/style.css (class list at the top of that
+# file). Every argument that can hold catalog data is escaped here. Arguments named *_html are
+# trusted markup built by the caller and are inserted as they are.
+
+MONO_HUES = 12
+_STOP_WORDS = {"a", "an", "and", "for", "of", "on", "the", "to", "with"}
+
+
+def initials(name):
+    """Two letters for a monogram: 'AirportItlwm with AWDL' -> 'AI', 'Good Wi-Fi' -> 'GW'."""
+    words = [w for w in re.findall(r"[^\W_]+", text(name), flags=re.UNICODE)]
+    if not words:
+        return "?"
+    caps = re.findall(r"[A-Z]", words[0])
+    if len(caps) >= 2:
+        return "".join(caps[:2])
+    sig = [w for w in words if w.lower() not in _STOP_WORDS] or words
+    if len(sig) >= 2:
+        return (sig[0][0] + sig[1][0]).upper()
+    return sig[0][:2].upper() if len(sig[0]) > 1 else sig[0].upper()
+
+
+def hue_index(key):
+    """A stable 0..MONO_HUES-1 bucket for an id, so a project keeps its color across builds."""
+    return hashlib.sha256(text(key).encode("utf-8")).digest()[0] % MONO_HUES
+
+
+def monogram(k, size=None):
+    """A square avatar with a project's initials, tinted by a hue derived from its id.
+
+    Decorative (aria-hidden): always place it next to the project name. size: None, 'sm' or 'lg'.
+    """
+    k = obj(k)
+    kid = text(k.get("id"))
+    letters = initials(text(k.get("name")) or kid)
+    sz = f" monogram-{size}" if size in ("sm", "lg") else ""
+    return f'<span class="monogram mono-h{hue_index(kid)}{sz}" aria-hidden="true">{esc(letters)}</span>'
+
+
+def chip(label, kind=None, title=None):
+    """A small inline label. kind: 'hw' (PCI/USB id, monospace), 'cat' (category), 'ver' (version,
+    monospace) or None (plain)."""
+    cls = f" chip-{kind}" if kind in ("hw", "cat", "ver") else ""
+    t = f' title="{esc(title)}"' if title else ""
+    return f'<span class="chip{cls}"{t}>{esc(label)}</span>'
+
+
+def category_chip(c):
+    return chip(CATEGORIES.get(text(c), text(c)), "cat")
+
+
+def hash_chip(value):
+    """A monospace hash that truncates to fit; the full value stays in the text (copyable) and title."""
+    v = text(value)
+    return f'<code class="hash-chip" title="{esc(v)}">{esc(v)}</code>'
+
+
+def stat_tile(label, value, hint=None):
+    h = f'<span class="stat-hint">{esc(hint)}</span>' if hint else ""
+    return (f'<div class="stat"><span class="stat-value">{esc(value)}</span>'
+            f'<span class="stat-label">{esc(label)}</span>{h}</div>')
+
+
+def stat_tiles(tiles_html):
+    """Wrap several stat_tile() results in the responsive grid."""
+    return f'<div class="stats">{"".join(tiles_html)}</div>'
+
+
+def button(label, href, variant="primary", size=None):
+    """A link styled as a button. variant: primary, secondary or ghost; size: None, 'sm' or 'lg'.
+    href is used as given (escaped): pass only site-relative paths or safe_https() results."""
+    v = variant if variant in ("primary", "secondary", "ghost") else "primary"
+    s = f" btn-{size}" if size in ("sm", "lg") else ""
+    return f'<a class="btn btn-{v}{s}" href="{esc(href)}">{esc(label)}</a>'
+
+
+def breadcrumbs(trail):
+    """trail: [(label, href or None), ...]; the last entry is the current page."""
+    lis = []
+    for i, (label, href) in enumerate(trail):
+        last = i == len(trail) - 1
+        if href and not last:
+            lis.append(f'<li><a href="{esc(href)}">{esc(label)}</a></li>')
+        else:
+            lis.append(f'<li><span aria-current="page">{esc(label)}</span></li>' if last
+                       else f"<li><span>{esc(label)}</span></li>")
+    return f'<nav class="crumbs" aria-label="Breadcrumb"><ol>{"".join(lis)}</ol></nav>'
+
+
+def callout(body_html, kind="note", title=None):
+    """A note or warning box. body_html is trusted markup; title is escaped."""
+    kd = kind if kind in ("note", "warning") else "note"
+    t = f'<p class="callout-title">{esc(title)}</p>' if title else ""
+    return f'<div class="callout callout-{kd}" role="note">{t}{body_html}</div>'
+
+
+def empty_state(title, body_html="", action_html=""):
+    """An empty panel: what is missing and what to do about it. title is escaped."""
+    b = f"<p>{body_html}</p>" if body_html else ""
+    a = f'<p class="empty-action">{action_html}</p>' if action_html else ""
+    return f'<div class="empty-state"><p class="empty-title">{esc(title)}</p>{b}{a}</div>'
+
+
+LADDER = [("submitted", "Submitted", "neutral"), ("author-tested", "Author-tested", "blue"),
+          ("community-verified", "Community-verified", "green")]
+
+
+def status_ladder(k, compact=False):
+    """The road to community-verified: submitted, author-tested, community-verified, with
+    COMMUNITY_MIN tester slots filled by reports from people who don't maintain the project.
+
+    A reported-broken project keeps its ladder and gets a red note under it.
+    """
+    st = obj(obj(k).get("status"))
+    s = text(st.get("status"))
+    testers = len(items(st.get("testers")))
+    broken = len(items(st.get("broken_reports")))
+    author = bool(st.get("author_tested")) or s == "author-tested"
+    filled = min(testers, COMMUNITY_MIN)
+    reached = {"submitted": True, "author-tested": author, "community-verified": s == "community-verified"}
+    current = s if s in reached else ("author-tested" if author else "submitted")
+    steps = []
+    for key, label, color in LADDER:
+        cls = ["ladder-step", f"s-{color}"]
+        if reached[key]:
+            cls.append("is-reached")
+        if key == current:
+            cls.append("is-current")
+        state = ", current" if key == current else (", done" if reached[key] else ", not yet")
+        aria = ' aria-current="step"' if key == current else ""
+        extra = ""
+        if key == "community-verified":
+            slots = "".join(f'<span class="slot{" is-filled" if i < filled else ""}"></span>'
+                            for i in range(COMMUNITY_MIN))
+            extra = (f'<span class="ladder-slots" aria-hidden="true">{slots}</span>'
+                     f'<span class="ladder-count">{filled} of {COMMUNITY_MIN} testers</span>')
+        steps.append(f'<li class="{" ".join(cls)}"{aria}><span class="ladder-node" aria-hidden="true"></span>'
+                     f'<span class="ladder-label">{label}<span class="sr-only">{state}</span></span>{extra}</li>')
+    note = ""
+    if s == "reported-broken":
+        note = (f'<p class="ladder-broken">{badge("Reported broken", "red")} '
+                f'{broken} report{"s" if broken != 1 else ""} from people who don\'t maintain it say the newest '
+                f'release is broken.</p>')
+    mods = (" ladder-compact" if compact else "") + (" is-broken" if s == "reported-broken" else "")
+    return (f'<div class="ladder{mods}"><ol class="ladder-steps" aria-label="Status">{"".join(steps)}</ol>'
+            f"{note}</div>")
+
+
 # ---------------------------------------------------------------- markdown
 
 _FENCE = re.compile(r"^( *)(`{3,}|~{3,})\s*([\w+.-]*)\s*$")
@@ -409,11 +558,21 @@ def md_to_html(src, resolve=None, shift=0):
 
 # ---------------------------------------------------------------- page shell
 
-LOGO = ('<svg class="logo" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">'
-        '<rect x="5" y="5" width="14" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>'
-        '<path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" stroke="currentColor" '
-        'stroke-width="2" stroke-linecap="round"/><rect x="9" y="9" width="6" height="6" rx="1" '
-        'fill="currentColor"/></svg>')
+LOGO = ('<svg class="logo" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true" focusable="false">'
+        '<rect class="logo-tile" width="32" height="32" rx="8"/>'
+        '<g class="logo-glyph" fill="none" stroke-width="2" stroke-linecap="round">'
+        '<rect x="10" y="10" width="12" height="12" rx="2"/>'
+        '<path d="M13.5 6v4M18.5 6v4M13.5 22v4M18.5 22v4M6 13.5h4M6 18.5h4M22 13.5h4M22 18.5h4"/></g>'
+        '<rect class="logo-die" x="13.5" y="13.5" width="5" height="5" rx="1"/></svg>')
+ARROW = ('<svg class="icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+         '<path d="M5 11 11 5M6 5h5v5" fill="none" stroke="currentColor" stroke-width="1.6" '
+         'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+PAGE_CSS = ("pages-home-catalog.css", "pages-kext-docs.css")  # phase-specific sheets, loaded after style.css
+
+
+def lockup(base):
+    return f'<a class="brand" href="{base}">{LOGO}<span class="wordmark">open<b>kext</b></span></a>'
+
 
 NAV = [("catalog/", "Catalog", "catalog"), ("docs/", "Docs", "docs"),
        ("docs/submit/", "Submit", "submit"), ("docs/report/", "Report a test", "report")]
@@ -454,11 +613,12 @@ class Site:
             csp_script = f"'sha256-{digest}'"
             script_tag = f"<script>{script}</script>"
         csp = (f"default-src 'none'; style-src 'self'; img-src 'self'; script-src {csp_script}; "
-               "base-uri 'none'; form-action 'none'")
+               "base-uri 'none'; form-action 'self'")
         cur = ' aria-current="page"'
         nav = "".join(
             f'<li><a href="{base}{href}"{cur if key == active else ""}>{label}</a></li>'
             for href, label, key in NAV)
+        page_css = "".join(f'<link rel="stylesheet" href="{base}assets/{c}">\n' for c in PAGE_CSS)
         extra_head = ""
         if rel.endswith("index.html"):
             extra_head += '<link rel="alternate" type="text/markdown" href="index.md">\n'
@@ -476,23 +636,36 @@ class Site:
 <meta http-equiv="Content-Security-Policy" content="{csp}">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)">
 <title>{esc(full_title)}</title>
 <meta name="description" content="{esc(desc or 'Open-source hackintosh drivers, ports and driver-development guides, with test reports from the community.')}">
 <link rel="icon" href="{base}assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="{base}assets/style.css">
-{extra_head}</head>
+{page_css}{extra_head}</head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<header class="site-header"><div class="wrap">
-<a class="brand" href="{base}">{LOGO}<span>open<b>kext</b></span></a>
-<nav aria-label="Main"><ul>{nav}<li><a href="{GITHUB_ORG}">GitHub</a></li></ul></nav>
+<header class="site-header"><div class="wrap header-bar">
+{lockup(base)}
+<nav class="site-nav" aria-label="Main"><ul>{nav}</ul></nav>
+<a class="header-gh" href="{GITHUB_ORG}">GitHub{ARROW}</a>
 </div></header>
 <main id="main" class="wrap">
 {body}
 </main>
 <footer class="site-footer"><div class="wrap">
-<p>OpenKext is a community catalog of open-source drivers for macOS on non-Apple hardware. It hosts no binaries and no Apple software, and it is not affiliated with Apple.</p>
-<p>Catalog data: CC0-1.0, from <a href="{REGISTRY_REPO}">openkext/registry</a>, also as <a href="{base}catalog.json">catalog.json</a>. Site: MIT, <a href="{SITE_REPO}">openkext/openkext.github.io</a>. Built {esc(when)}.</p>
+<div class="footer-grid">
+<div class="footer-about">
+{lockup(base)}
+<p>A community catalog of open-source drivers for macOS on non-Apple hardware. It hosts no binaries and no Apple software, and it is not affiliated with Apple.</p>
+</div>
+<nav class="footer-nav" aria-label="Footer">
+<div><p class="footer-h">Catalog</p><ul><li><a href="{base}catalog/">Browse projects</a></li><li><a href="{base}catalog.json">catalog.json</a></li><li><a href="{base}api/index.json">JSON API</a></li><li><a href="{base}llms.txt">llms.txt</a></li></ul></div>
+<div><p class="footer-h">Take part</p><ul><li><a href="{base}docs/submit/">Submit a project</a></li><li><a href="{base}docs/report/">Report a test</a></li><li><a href="{base}docs/governance/">Governance</a></li><li><a href="{base}docs/">All docs</a></li></ul></div>
+<div><p class="footer-h">Source</p><ul><li><a href="{REGISTRY_REPO}">openkext/registry</a></li><li><a href="{SITE_REPO}">openkext.github.io</a></li><li><a href="{GITHUB_ORG}">GitHub organization</a></li></ul></div>
+</nav>
+</div>
+<p class="footer-base">Catalog data CC0-1.0, site code MIT. <span class="mono">Built <time datetime="{self.built.strftime('%Y-%m-%dT%H:%MZ')}">{esc(when)}</time></span></p>
 </div></footer>
 {script_tag}
 </body>
@@ -505,15 +678,17 @@ class Site:
         kid = text(k.get("id"))
         st = obj(k.get("status"))
         mac = obj(k.get("macos"))
-        cats = ", ".join(esc(CATEGORIES.get(text(c), text(c))) for c in items(k.get("categories")))
-        rng = f"macOS {esc(text(mac.get('min')))} to {esc(text(mac.get('max')))}" if mac else ""
-        meta = [x for x in (cats, rng, esc(text(k.get("license"))),
-                            f"release {esc(text(st.get('release')))}" if st.get("release") else "") if x]
-        return (f'<li data-id="{esc(kid)}"><article class="card">'
+        cats = "".join(category_chip(c) for c in items(k.get("categories")))
+        rng = (f'<span class="meta-item">macOS {esc(text(mac.get("min")))} to {esc(text(mac.get("max")))}</span>'
+               if mac else "")
+        lic = f'<span class="meta-item mono">{esc(text(k.get("license")))}</span>' if k.get("license") else ""
+        rel = chip(text(st.get("release")), "ver", "Newest release") if st.get("release") else ""
+        return (f'<li data-id="{esc(kid)}"><article class="card card-link">'
+                f'<div class="card-head">{monogram(k)}<div class="card-title">'
                 f'<h3><a href="{base}kext/{esc(kid)}/">{esc(text(k.get("name")) or kid)}</a></h3>'
-                f'{status_badge(text(st.get("status")))}'
-                f'<p>{esc(text(k.get("summary")))}</p>'
-                f'<p class="meta">{" · ".join(meta)}</p></article></li>')
+                f'{status_badge(text(st.get("status")))}</div></div>'
+                f'<p class="card-summary">{esc(text(k.get("summary")))}</p>'
+                f'<div class="card-meta">{cats}{rng}{lic}{rel}</div></article></li>')
 
     def latest_date(self, k):
         dates = [text(obj(r).get("date")) for r in items(k.get("releases"))]

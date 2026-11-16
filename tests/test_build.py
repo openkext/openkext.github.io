@@ -308,6 +308,118 @@ class LLMOutputTest(SiteTest):
         self.assertIn("/kext/good-wifi/</loc>", self.read("sitemap.xml"))
 
 
+class ComponentTest(unittest.TestCase):
+    def test_initials(self):
+        self.assertEqual(build.initials("AirportItlwm with AWDL and AirDrop"), "AI")
+        self.assertEqual(build.initials("Good Wi-Fi"), "GW")
+        self.assertEqual(build.initials("the Driver"), "DR")
+        self.assertEqual(build.initials("lilu"), "LI")
+        self.assertEqual(build.initials(""), "?")
+        self.assertEqual(build.initials(None), "?")
+
+    def test_monogram_escapes_and_is_stable(self):
+        k = {"id": "evil", "name": '<img src=x onerror=alert(1)>"'}
+        out = build.monogram(k)
+        self.assertNotIn("<img", out)
+        self.assertNotIn('"x', out)
+        self.assertRegex(out, r'^<span class="monogram mono-h\d{1,2}" aria-hidden="true">[A-Z?]{1,2}</span>$')
+        self.assertEqual(out, build.monogram(k))
+        self.assertIn("monogram-lg", build.monogram(k, "lg"))
+        self.assertNotIn("monogram-x", build.monogram(k, "x"))
+        self.assertTrue(all(0 <= build.hue_index(f"id{i}") < build.MONO_HUES for i in range(50)))
+        self.assertEqual(build.monogram({"name": "&"}), '<span class="monogram mono-h%d" aria-hidden="true">?</span>'
+                         % build.hue_index(""))
+
+    def test_chip_escapes(self):
+        out = build.chip('<b>"x"</b>', "hw", title='"><script>')
+        self.assertEqual(out, '<span class="chip chip-hw" title="&quot;&gt;&lt;script&gt;">'
+                              '&lt;b&gt;&quot;x&quot;&lt;/b&gt;</span>')
+        self.assertEqual(build.chip("a", 'cat" onclick="x'), '<span class="chip">a</span>')
+        self.assertEqual(build.category_chip("wifi"), '<span class="chip chip-cat">Wi-Fi</span>')
+
+    def test_hash_chip(self):
+        out = build.hash_chip('ab"<>')
+        self.assertEqual(out, '<code class="hash-chip" title="ab&quot;&lt;&gt;">ab&quot;&lt;&gt;</code>')
+
+    def test_stat_tile_and_button(self):
+        self.assertEqual(build.stat_tile("<P>", 3, "h&"),
+                         '<div class="stat"><span class="stat-value">3</span><span class="stat-label">&lt;P&gt;</span>'
+                         '<span class="stat-hint">h&amp;</span></div>')
+        self.assertIn('class="stats"', build.stat_tiles([build.stat_tile("a", 1)]))
+        b = build.button("Go <now>", 'x" onclick="y', "evil", "huge")
+        self.assertEqual(b, '<a class="btn btn-primary" href="x&quot; onclick=&quot;y">Go &lt;now&gt;</a>')
+        self.assertIn("btn-ghost btn-sm", build.button("a", "b/", "ghost", "sm"))
+
+    def test_breadcrumbs_callout_empty(self):
+        out = build.breadcrumbs([("Catalog", "../catalog/"), ("<x>", "ignored")])
+        self.assertIn('<a href="../catalog/">Catalog</a>', out)
+        self.assertIn('<span aria-current="page">&lt;x&gt;</span>', out)
+        self.assertNotIn("ignored", out)
+        self.assertIn('class="callout callout-warning"', build.callout("<p>b</p>", "warning", "<t>"))
+        self.assertIn("&lt;t&gt;", build.callout("<p>b</p>", "warning", "<t>"))
+        self.assertIn("callout-note", build.callout("x", "nope"))
+        self.assertIn('<p class="empty-title">&lt;none&gt;</p>', build.empty_state("<none>"))
+
+    def ladder(self, status, testers=0, author=False, broken=0):
+        return build.status_ladder({"status": {"status": status, "testers": ["t"] * testers,
+                                               "broken_reports": ["b"] * broken, "author_tested": author}})
+
+    def test_status_ladder(self):
+        sub = self.ladder("submitted", testers=1)
+        self.assertIn("1 of 3 testers", sub)
+        self.assertEqual(sub.count('class="slot is-filled"'), 1)
+        self.assertEqual(sub.count("aria-current"), 1)
+        self.assertRegex(sub, r'class="ladder-step s-neutral is-reached is-current" aria-current="step"')
+        auth = self.ladder("author-tested")
+        self.assertIn('s-blue is-reached is-current', auth)
+        self.assertIn("0 of 3 testers", auth)
+        cv = self.ladder("community-verified", testers=5, author=True)
+        self.assertIn("3 of 3 testers", cv)
+        self.assertIn('s-green is-reached is-current', cv)
+        self.assertNotIn("is-broken", cv)
+        br = self.ladder("reported-broken", testers=1, author=True, broken=2)
+        self.assertIn("ladder is-broken", br)
+        self.assertIn("2 reports", br)
+        self.assertIn("badge-red", br)
+        self.assertIn('s-blue is-reached is-current', br)
+        weird = build.status_ladder({"status": {"status": "<script>", "testers": "x"}})
+        self.assertNotIn("<script>", weird)
+        self.assertIn("0 of 3 testers", weird)
+        self.assertIn("ladder-compact", build.status_ladder({}, compact=True))
+
+
+class ShellTest(SiteTest):
+    def test_csp_allows_same_origin_forms_only(self):
+        for rel in ("index.html", "catalog/index.html", "kext/good-wifi/index.html", "docs/index.html", "404.html"):
+            page = self.read(rel)
+            self.assertIn("form-action 'self'", page, rel)
+            self.assertIn("default-src 'none'", page, rel)
+            self.assertNotIn("unsafe-inline", page, rel)
+
+    def test_page_stylesheets_after_main(self):
+        page = self.read("kext/good-wifi/index.html")
+        main = page.index('href="../../assets/style.css"')
+        a = page.index('href="../../assets/pages-home-catalog.css"')
+        b = page.index('href="../../assets/pages-kext-docs.css"')
+        self.assertLess(main, a)
+        self.assertLess(a, b)
+        self.assertIn('href="/assets/pages-kext-docs.css"', self.read("404.html"))
+        for name in ("pages-home-catalog.css", "pages-kext-docs.css"):
+            self.assertTrue(os.path.isfile(os.path.join(self.out, "assets", name)))
+
+    def test_header_marks_current_page(self):
+        page = self.read("catalog/index.html")
+        self.assertIn('<a href="../catalog/" aria-current="page">Catalog</a>', page)
+        self.assertEqual(page.count('aria-current="page"'), 1)
+        self.assertNotIn('aria-current="page"', self.read("index.html").split("<main")[0])
+
+    def test_cards_use_components(self):
+        page = self.read("catalog/index.html")
+        self.assertIn('<span class="monogram mono-h', page)
+        self.assertIn('<span class="chip chip-cat">', page)
+        self.assertNotIn("<img", page)
+
+
 class ProseTest(unittest.TestCase):
     def test_no_em_or_en_dashes(self):
         paths = [os.path.join(ROOT, "content", n) for n in os.listdir(os.path.join(ROOT, "content"))]
